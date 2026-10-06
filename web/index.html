@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="th">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>สนามรบ — Simcore</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="top">
+      <div>
+        <p class="eyebrow">Server Simulation Core</p>
+        <h1>สนามรบ</h1>
+      </div>
+      <div class="who" id="who">
+        <span id="who-name">ยังไม่ได้เข้าสู่ระบบ</span>
+        <button type="button" id="logout-btn" class="ghost" hidden>ออกจากระบบ</button>
+      </div>
+    </header>
+
+    <div id="banner" class="banner" hidden role="alert"></div>
+
+    <section class="panel config-panel">
+      <div class="panel-head">
+        <h2>ที่อยู่ API</h2>
+        <p class="muted">ค่าเริ่มต้นมาจากไฟล์ config บันทึกในเบราว์เซอร์นี้ได้โดยไม่ต้องแก้ไฟล์</p>
+      </div>
+      <form id="api-form" class="row">
+        <label class="grow">
+          <span class="label">API base URL</span>
+          <input id="api-url" name="api" type="url" autocomplete="off" spellcheck="false" required />
+        </label>
+        <button type="submit">บันทึก</button>
+        <button type="button" id="api-reset" class="ghost">ค่าเริ่มต้น</button>
+        <button type="button" id="retry-btn" class="ghost">ลองอีกครั้ง</button>
+      </form>
+      <p id="api-status" class="status">กำลังตรวจเซิร์ฟเวอร์…</p>
+    </section>
+
+    <section id="login-panel" class="panel">
+      <div class="panel-head">
+        <h2>เข้าสู่ระบบทดลอง</h2>
+        <p class="muted">โทเคนเป็นรหัสผู้เล่นตรง ๆ ไม่มีการลงนาม ใช้ได้เฉพาะโลกสาธิต Alice / Bob</p>
+      </div>
+      <form id="login-form" class="row">
+        <label class="grow">
+          <span class="label">ชื่อผู้เล่น</span>
+          <input id="player-name" name="name" value="Alice" maxlength="40" required />
+        </label>
+        <button type="submit">เข้าสู่ระบบ</button>
+        <button type="button" data-player="Alice" class="ghost">Alice</button>
+        <button type="button" data-player="Bob" class="ghost">Bob</button>
+      </form>
+      <p id="login-note" class="muted"></p>
+    </section>
+
+    <main id="game" hidden>
+      <section class="layout">
+        <section class="panel">
+          <div class="panel-head">
+            <h2>เมืองของฉัน</h2>
+            <p id="clock-line" class="muted"></p>
+          </div>
+          <div id="cities"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>แผนที่</h2>
+            <p class="muted">คลิกเมืองเพื่อเลือกเป็นเป้าหมาย</p>
+          </div>
+          <div id="map" class="map"></div>
+          <ul id="map-list" class="plain"></ul>
+        </section>
+      </section>
+
+      <section class="layout">
+        <section class="panel">
+          <div class="panel-head">
+            <h2>กองทัพและการเดินทาง</h2>
+            <p class="muted">เวลานับถอยหลังอยู่ที่เบราว์เซอร์ ผลรบมาจากเซิร์ฟเวอร์เท่านั้น</p>
+          </div>
+          <div id="armies"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>คำสั่ง</h2>
+          </div>
+          <form id="order-form">
+            <label>
+              <span class="label">กองทัพ</span>
+              <select id="army-select"></select>
+            </label>
+            <label>
+              <span class="label">เมืองเป้าหมาย</span>
+              <select id="city-select"></select>
+            </label>
+            <div class="row">
+              <button type="button" id="attack-btn" class="danger">โจมตี</button>
+              <button type="button" id="move-btn">เดินทัพ</button>
+              <button type="button" id="recall-btn" class="ghost">เรียกกลับ</button>
+              <button type="button" id="refresh-btn" class="ghost">รีเฟรช</button>
+            </div>
+            <p id="order-hint" class="muted"></p>
+            <p id="order-error" class="error" hidden></p>
+          </form>
+        </section>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>รายงานการรบ</h2>
+          <p class="muted">รายงานจะปรากฏหลัง worker ประมวลผลตอนกองทัพไปถึง</p>
+        </div>
+        <div id="reports"></div>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <p>ผลลัพธ์ของการรบ การปล้น และขากลับ เกิดขึ้นบนเซิร์ฟเวอร์เมื่อถึงเวลา ไม่ได้อยู่ในเบราว์เซอร์</p>
+    </footer>
+
+    <script src="config.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

@@ -1,6 +1,46 @@
 from functools import lru_cache
 
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Browser origins used when trying the static client against a local API.
+# Production does not add these on its own; put them in SIMCORE_CORS_ORIGINS
+# only if you want a laptop on the same machine to call the public API.
+LOCAL_DEV_ORIGINS = (
+    "http://localhost:8080",
+    "http://127.0.0.1:8080",
+    "http://localhost:5500",
+    "http://127.0.0.1:5500",
+    "http://localhost:4173",
+    "http://127.0.0.1:4173",
+    "http://localhost:8741",
+    "http://127.0.0.1:8741",
+)
+
+# GitHub Pages origin for https://nustanakritwithai.github.io/Server-Manager-/
+# The path is not part of the origin.
+GITHUB_PAGES_ORIGIN = "https://nustanakritwithai.github.io"
+
+# Tokens that must never authenticate admin routes on a public server.
+_FORBIDDEN_PRODUCTION_TOKENS = frozenset({"", "dev-admin", "change_me", "changeme"})
+
+
+def normalize_database_url(value: str) -> str:
+    """Accept postgres:// and postgresql:// URLs and use the psycopg driver.
+
+    Hosted Postgres often hands out a libpq URL. SQLAlchemy needs the driver
+    name in the scheme or it tries to import psycopg2.
+    """
+
+    stripped = value.strip()
+    lowered = stripped.lower()
+    if lowered.startswith("postgresql+"):
+        return stripped
+    if lowered.startswith("postgres://"):
+        return "postgresql+psycopg://" + stripped[len("postgres://") :]
+    if lowered.startswith("postgresql://"):
+        return "postgresql+psycopg://" + stripped[len("postgresql://") :]
+    return stripped
 
 
 class Settings(BaseSettings):
@@ -8,7 +48,7 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="SIMCORE_",
-        env_file=".env",
+        env_file=(".env", ".env.prod"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -19,12 +59,49 @@ class Settings(BaseSettings):
     enable_admin: bool = False
     worker_poll_seconds: float = 1.0
     max_event_attempts: int = 5
+    # Comma-separated browser origins. The Windows bootstrap writes this.
+    cors_origins: str = ",".join((GITHUB_PAGES_ORIGIN, *LOCAL_DEV_ORIGINS))
+    # When true, the API process also runs the worker loop. The standalone
+    # worker remains the default, including on the Windows VPS.
+    embedded_worker: bool = False
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def _normalize_database_url(cls, value: object) -> object:
+        if isinstance(value, str):
+            return normalize_database_url(value)
+        return value
+
+    @model_validator(mode="after")
+    def _production_admin_token(self) -> "Settings":
+        if self.env == "production":
+            token = self.admin_token.strip()
+            if token.casefold() in _FORBIDDEN_PRODUCTION_TOKENS:
+                raise ValueError(
+                    "SIMCORE_ADMIN_TOKEN must be set to a unique value when SIMCORE_ENV=production. "
+                    "dev-admin is only for local docker-compose."
+                )
+            self.admin_token = token
+        return self
 
     @property
     def admin_enabled(self) -> bool:
         if self.env == "production":
             return self.enable_admin
         return True
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        origins: list[str] = []
+        for part in self.cors_origins.split(","):
+            item = part.strip()
+            if item and item not in origins:
+                origins.append(item)
+        if self.env != "production":
+            for item in LOCAL_DEV_ORIGINS:
+                if item not in origins:
+                    origins.append(item)
+        return origins
 
 
 @lru_cache

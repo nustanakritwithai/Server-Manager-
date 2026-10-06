@@ -11,6 +11,7 @@ import argparse
 import logging
 import os
 import socket
+import threading
 import time
 from datetime import timedelta
 
@@ -80,13 +81,28 @@ def _record_failure(event_id: int, exc: BaseException, base: Clock) -> None:
         session.close()
 
 
-def serve(base_clock: Clock | None = None) -> None:
+def serve(
+    base_clock: Clock | None = None,
+    stop_event: threading.Event | None = None,
+    poll_seconds: float | None = None,
+) -> None:
+    """Poll until the process is killed, or until stop_event is set.
+
+    The standalone worker leaves stop_event empty and runs until the service
+    stops it. The optional embedded worker passes a stop event so API shutdown
+    can join the thread.
+    """
+
     settings = get_settings()
-    logger.info("worker %s polling every %.2fs", WORKER_ID, settings.worker_poll_seconds)
-    while True:
+    interval = settings.worker_poll_seconds if poll_seconds is None else poll_seconds
+    logger.info("worker %s polling every %.2fs", WORKER_ID, interval)
+    while stop_event is None or not stop_event.is_set():
         status, _event_id = run_once(base_clock)
         if status == "empty":
-            time.sleep(settings.worker_poll_seconds)
+            if stop_event is None:
+                time.sleep(interval)
+            elif stop_event.wait(interval):
+                return
 
 
 def main() -> None:

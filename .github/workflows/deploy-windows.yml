@@ -1,0 +1,29 @@
+name: Deploy to Windows VPS
+
+# Push to main only. Do not add pull_request: a public pull request would
+# execute on the VPS, and this runner can restart Windows services.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: windows-vps-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, Windows, X64, simcore]
+    steps:
+      - name: Update the production install
+        shell: powershell
+        run: |
+          $root = $env:SIMCORE_ROOT
+          if ([string]::IsNullOrWhiteSpace($root)) {
+            $root = "C:\simcore\app"
+          }
+          $script = Join-Path $root "deploy\windows\update.ps1"
+          if (-not (Test-Path $script)) {
+            throw "update.ps1 not found at $script. Clone the repo, run bootstrap.ps1, and set the machine env var SIMCORE_ROOT."
+          }
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script -RepoRoot $root

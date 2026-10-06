@@ -8,10 +8,11 @@ __pycache__/
 dist/
 build/
 
-# Local config. .env.example is the committed template.
+# Local config. The example files are the committed templates.
 .env
 .env.*
 !.env.example
+!.env.prod.example
 
 # Keys and credentials
 *.pem

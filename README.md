@@ -32,7 +32,7 @@ The client counts down from `arrive_at` itself. Real casualties and loot appear 
 
 Combat is a pure function, `resolve_battle(attacker, defender, seed)`, with its own LCG so a report can be replayed. Resource changes go through the `transactions` ledger. Retrying an event cannot grant loot twice.
 
-Dev login is a **placeholder**. `POST /v1/auth/dev-login` returns `dev:{player_id}`. It is not signed. Do not expose this port publicly.
+Dev login is a **placeholder**. `POST /v1/auth/dev-login` returns `dev:{player_id}`. It is not signed. The web client in `web/` uses it so people can play the seeded world (Alice / Oakhold, Bob / Ironford). Anyone who can reach the API can act as those players. On the VPS the API process listens on localhost only; Caddy is what publishes HTTPS. This is not an account system.
 
 ## Run locally (Docker)
 
@@ -95,7 +95,7 @@ Postgres must already be running. Settings come from the environment (`SIMCORE_`
 cp .env.example .env
 ```
 
-`.env` is gitignored. The API and the worker read it when it is present; environment variables win over the file. The template only contains local placeholders: database user `simcore`, password `simcore`, and admin token `dev-admin`. With no `.env` and no variables set, the URL is `postgresql+psycopg://simcore:simcore@127.0.0.1:5432/simcore`.
+`.env` is gitignored. The API and the worker read `.env` and, when it exists, `.env.prod`. Environment variables win over both files. The template only contains local placeholders: database user `simcore`, password `simcore`, and admin token `dev-admin`. With no `.env` and no variables set, the URL is `postgresql+psycopg://simcore:simcore@127.0.0.1:5432/simcore`. A `postgres://` or `postgresql://` URL is rewritten to `postgresql+psycopg://`.
 
 ```bash
 python3 -m venv .venv
@@ -113,6 +113,97 @@ In another shell:
 source .venv/bin/activate
 python -m simcore.worker
 ```
+
+`SIMCORE_EMBEDDED_WORKER=true` runs that same loop inside the API process instead. Leave it false for normal use, including the VPS, where `simcore-worker` is its own Windows service. Production (`SIMCORE_ENV=production`) refuses to start if `SIMCORE_ADMIN_TOKEN` is empty or still `dev-admin`. Local docker-compose keeps `dev-admin`.
+
+To click through the vertical slice against a local API:
+
+```bash
+cd web
+python3 -m http.server 8080
+```
+
+Open http://127.0.0.1:8080 and point the API field at http://127.0.0.1:8741. Development CORS allows that origin plus `https://nustanakritwithai.github.io`.
+
+## Deploy on the Windows VPS
+
+Production is the Windows Server 2025 machine at **157.85.96.139** (sign in as **Administrator** over Remote Desktop). Docker Compose stays the local development setup. Production does not run Linux containers.
+
+The machine runs PostgreSQL 16 (localhost only), the API on `127.0.0.1:8741`, the standalone worker, and Caddy on ports 80 and 443. WinSW registers `simcore-api`, `simcore-worker`, and `simcore-caddy` as automatic services that restart after a crash. There is no domain yet, so the default public name is **`157-85-96-139.sslip.io`**. That name resolves to `157.85.96.139`, which is enough for Caddy to get a Let's Encrypt certificate.
+
+The real system clock is what production uses. `POST /v1/admin/clock/advance` stays behind the admin token, and the whole admin API is off unless `SIMCORE_ENABLE_ADMIN=true`.
+
+### 1. GitHub settings (any computer)
+
+1. Merge the deploy branch so `main` contains `deploy/windows` and `web/`.
+2. In the repo, open **Settings → Pages → Build and deployment** and set **Source** to **GitHub Actions**.
+3. Open the **Deploy GitHub Pages** workflow and re-run it if the run that landed with the merge failed before Pages was switched to GitHub Actions. The site is https://nustanakritwithai.github.io/Server-Manager-/
+
+`web/config.js` already sets the API to `https://157-85-96-139.sslip.io`. Do not change it unless you change `API_DOMAIN` on the server.
+
+### 2. On the VPS, over RDP, in this order
+
+1. Connect with Remote Desktop to `157.85.96.139` as `Administrator`.
+2. Open **Windows PowerShell as Administrator**.
+3. Install Git and clone `main`:
+
+```powershell
+winget install --id Git.Git -e --accept-package-agreements --accept-source-agreements
+$env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User")
+New-Item -ItemType Directory -Force -Path C:\simcore | Out-Null
+git clone https://github.com/nustanakritwithai/Server-Manager-.git C:\simcore\app
+```
+
+4. Run the one-time bootstrap:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\simcore\app\deploy\windows\bootstrap.ps1
+```
+
+That installs Python 3.12, PostgreSQL 16, Caddy 2.11.7, and WinSW; creates the `simcore` database role with a random password; generates `SIMCORE_ADMIN_TOKEN`; writes `C:\simcore\app\.env.prod`; opens Windows Firewall for inbound TCP **80** and **443** only; removes any inbound **5432** rule and binds PostgreSQL to localhost; runs Alembic; seeds Alice and Bob only when the database has no players; then starts the three services. RDP (3389) is left alone. The script does not print the password or the admin token.
+
+5. On the VPS, open `https://157-85-96-139.sslip.io/health`. The first request can take about a minute while the certificate is issued. A healthy process returns `{"status":"ok"}`. If it does not, read `C:\simcore\logs`. If the hosting panel has a firewall in front of Windows, allow inbound TCP 80 and 443 there too. Do not allow 5432.
+
+6. Install a GitHub Actions self-hosted runner so a push to `main` updates the server. In GitHub open **Settings → Actions → Runners → New self-hosted runner → Windows**, and copy the token that page shows. Back in the elevated PowerShell window:
+
+```powershell
+mkdir C:\simcore\actions-runner
+cd C:\simcore\actions-runner
+# Paste the download and Expand-Archive commands from that GitHub page, then:
+.\config.cmd --url https://github.com/nustanakritwithai/Server-Manager- --token PASTE_THE_TOKEN --name simcore-vps --labels simcore --unattended
+.\svc.cmd install
+.\svc.cmd start
+$runner = (Get-Service actions.runner.* | Select-Object -First 1).Name
+sc.exe config $runner obj= LocalSystem
+Restart-Service $runner
+```
+
+The space after `obj=` is required. LocalSystem is what lets the job restart the game services. The workflow is **push to main** and **manual dispatch** only. Do not add a pull-request trigger: this runner can restart Windows services, and a public pull request would run on the VPS.
+
+7. In GitHub, open **Actions → Deploy to Windows VPS** and run it, or push a commit to `main`. The job runs `deploy/windows/update.ps1`: `git pull`, `pip install`, `alembic upgrade`, seed if the world is still empty, then restart the services. Until the runner is online the job waits in the queue.
+
+8. Open https://nustanakritwithai.github.io/Server-Manager-/ and sign in as Alice or Bob. The page counts down from `arrive_at` on its own. Battle reports appear only after the worker has applied the arrival. If the services are down, the page says the API is unreachable instead of failing silently.
+
+### Values
+
+| What | Where | Value |
+| --- | --- | --- |
+| Public API origin | `web/config.js` key `apiBaseUrl`, and the URL field in the page | `https://157-85-96-139.sslip.io` |
+| `API_DOMAIN` | `C:\simcore\app\.env.prod` (created by bootstrap, not committed) | `157-85-96-139.sslip.io` |
+| Database password and `SIMCORE_ADMIN_TOKEN` | the same `.env.prod` | generated on the server; do not copy them into GitHub |
+| Runner registration token | `config.cmd` only, from the GitHub runners page | one-time; do not commit it |
+
+No repository secret is required for deploy. There is no SSH key.
+
+To move off sslip.io later: set `API_DOMAIN` in `.env.prod` to your hostname, point that name's A record at `157.85.96.139`, run `update.ps1`, and set `apiBaseUrl` to `https://` plus that exact host (no path, no trailing slash) before pushing `web/config.js`.
+
+### Limits
+
+- The VPS does not sleep the way a free application host does. If Windows or the services are stopped, the page says it cannot reach the API and keeps retrying.
+- sslip.io is a public DNS shortcut. If it is unavailable, the hostname and certificate renewal fail. A domain you control avoids that.
+- Let's Encrypt needs port 80 reachable from the internet and the name pointing at this IP. It will not issue a certificate before that is true.
+- Dev login stays a placeholder on the public URL. Treat the world as a shared demo.
+- The free-tier notes that apply to some hosts (the process sleeping when idle, a database that expires) do not apply here. You are paying for this VPS; disk is 60 GB and RAM is 8 GB, which is enough for this slice. PostgreSQL still needs backups, and this repo does not configure them yet.
 
 ## Tests
 
@@ -157,12 +248,15 @@ src/simcore/
   game/ledger.py          transactions + idempotency keys
 docs/GAME_RULES.md        the rules this server enforces
 alembic/                  schema migrations
-docker-compose.yml        Postgres + API + worker
+docker-compose.yml        local Postgres + API + worker
+web/                      static client for GitHub Pages
+deploy/windows/           VPS bootstrap, update, and Caddy example
+.github/workflows/        Pages deploy and the self-hosted Windows update
 ```
 
 ## Clock
 
-`OffsetClock` is `base.now() + world_state.offset_seconds`. The API and the worker both read that row, so advancing time in one process is visible to the other. Tests inject a `FrozenClock` as the base. Event effects use the event's `due_at`, so a worker that wakes up late does not stretch the march.
+`OffsetClock` is `base.now() + world_state.offset_seconds`. The API and the worker both read that row, so advancing time in one process is visible to the other. Tests inject a `FrozenClock` as the base. Production does not: the base clock is the real system clock. Event effects use the event's `due_at`, so a worker that wakes up late does not stretch the march. Advancing the offset is `POST /v1/admin/clock/advance`, and that route is admin-only. In production the admin API is disabled unless `SIMCORE_ENABLE_ADMIN=true`.
 
 ## Left for later
 
