@@ -1,0 +1,58 @@
+from __future__ import annotations
+
+from collections.abc import Iterator
+from typing import Annotated
+
+from fastapi import Depends, Header, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.orm import Session
+
+from simcore.auth import parse_dev_token
+from simcore.clock import OffsetClock
+from simcore.config import Settings
+from simcore.db import get_sessionmaker
+from simcore.errors import GameError
+from simcore.models import Player
+
+_bearer = HTTPBearer(auto_error=False)
+
+
+def get_session() -> Iterator[Session]:
+    session = get_sessionmaker()()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def get_clock(request: Request, session: Session = Depends(get_session)) -> OffsetClock:
+    return OffsetClock(session, request.app.state.base_clock)
+
+
+def get_current_player(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+    session: Session = Depends(get_session),
+) -> Player:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise GameError("missing bearer token", status_code=401, code="unauthorized")
+    player_id = parse_dev_token(credentials.credentials)
+    player = session.get(Player, player_id)
+    if player is None:
+        raise GameError("unknown player", status_code=401, code="unauthorized")
+    return player
+
+
+def require_admin(
+    request: Request,
+    x_admin_token: Annotated[str | None, Header()] = None,
+) -> Settings:
+    settings: Settings = request.app.state.settings
+    if not settings.admin_enabled:
+        raise GameError("admin API is disabled", status_code=404, code="not_found")
+    if not x_admin_token or x_admin_token != settings.admin_token:
+        raise GameError("invalid admin token", status_code=401, code="unauthorized")
+    return settings

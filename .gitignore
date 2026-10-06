@@ -1,0 +1,23 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Local config. .env.example is the committed template.
+.env
+.env.*
+!.env.example
+
+# Keys and credentials
+*.pem
+*.key
+id_rsa
+id_ed25519
+*.p12
+*.pfx
+
