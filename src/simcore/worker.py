@@ -1,0 +1,105 @@
+"""Background worker. One event, one database transaction, then commit.
+
+A crash before commit rolls the world back and the event stays pending.
+The failure path records the error in a separate transaction and never
+replays a committed loot grant.
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import os
+import socket
+import time
+from datetime import timedelta
+
+from simcore.clock import Clock, OffsetClock, SystemClock
+from simcore.config import get_settings
+from simcore.constants import EventStatus
+from simcore.db import get_sessionmaker
+from simcore.game.queue import claim_one
+from simcore.game.processor import process_event
+from simcore.models import Event
+
+logger = logging.getLogger("simcore.worker")
+
+WORKER_ID = f"{socket.gethostname()}:{os.getpid()}"
+
+
+def run_once(base_clock: Clock | None = None) -> tuple[str, int | None]:
+    """Claim and resolve a single due event.
+
+    Returns ("processed", id), ("failed", id), or ("empty", None).
+    """
+
+    base = base_clock or SystemClock()
+    session = get_sessionmaker()()
+    event_id: int | None = None
+    try:
+        with session.begin():
+            clock = OffsetClock(session, base)
+            event = claim_one(session, clock.now(), worker_id=WORKER_ID)
+            if event is None:
+                return "empty", None
+            event_id = event.id
+            # Resolve as of the scheduled instant so a late worker does not
+            # stretch travel or production past the ETA the client counted down.
+            process_event(session, event, event.due_at)
+        logger.info("processed event %s", event_id)
+        return "processed", event_id
+    except Exception as exc:
+        logger.exception("event %s failed", event_id)
+        if event_id is not None:
+            _record_failure(event_id, exc, base)
+        return "failed", event_id
+    finally:
+        session.close()
+
+
+def _record_failure(event_id: int, exc: BaseException, base: Clock) -> None:
+    settings = get_settings()
+    session = get_sessionmaker()()
+    try:
+        with session.begin():
+            event = session.get(Event, event_id, with_for_update=True)
+            if event is None or event.status == EventStatus.COMPLETED:
+                return
+            now = OffsetClock(session, base).now()
+            event.attempts += 1
+            event.last_error = str(exc)[:2000]
+            event.locked_by = None
+            event.locked_at = None
+            if event.attempts >= settings.max_event_attempts:
+                event.status = EventStatus.FAILED
+            else:
+                event.status = EventStatus.PENDING
+                backoff = min(60, 2 ** event.attempts)
+                event.due_at = now + timedelta(seconds=backoff)
+    finally:
+        session.close()
+
+
+def serve(base_clock: Clock | None = None) -> None:
+    settings = get_settings()
+    logger.info("worker %s polling every %.2fs", WORKER_ID, settings.worker_poll_seconds)
+    while True:
+        status, _event_id = run_once(base_clock)
+        if status == "empty":
+            time.sleep(settings.worker_poll_seconds)
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    parser = argparse.ArgumentParser(description="Process due world events")
+    parser.add_argument("--once", action="store_true", help="Process a single due event and exit")
+    args = parser.parse_args()
+    if args.once:
+        status, event_id = run_once()
+        print(f"{status} {event_id or ''}".strip())
+        return
+    serve()
+
+
+if __name__ == "__main__":
+    main()

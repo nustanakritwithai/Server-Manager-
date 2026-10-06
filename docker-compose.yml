@@ -1,0 +1,57 @@
+# One command for a local world: Postgres, the game server, and the event worker.
+# API is published on 8741 so it does not collide with a typical dev server.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: simcore
+      POSTGRES_PASSWORD: simcore
+      POSTGRES_DB: simcore
+    ports:
+      - "5432:5432"
+    volumes:
+      - simcore-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U simcore -d simcore"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  api:
+    build: .
+    environment:
+      SIMCORE_DATABASE_URL: postgresql+psycopg://simcore:simcore@db:5432/simcore
+      SIMCORE_ENV: development
+      SIMCORE_ADMIN_TOKEN: dev-admin
+      SIMCORE_SEED_ON_START: "1"
+    ports:
+      - "8741:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready')",
+        ]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 25s
+
+  worker:
+    build: .
+    command: ["python", "-m", "simcore.worker"]
+    environment:
+      SIMCORE_DATABASE_URL: postgresql+psycopg://simcore:simcore@db:5432/simcore
+      SIMCORE_ENV: development
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  simcore-pg:
