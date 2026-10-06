@@ -28,6 +28,8 @@ Write-Host "Install root: $InstallRoot"
 Write-Host "Repo root:    $RepoRoot"
 Write-Host "API domain:   $ApiDomain"
 
+Assert-SimcoreBootstrapDisk -InstallRoot $InstallRoot -RepoRoot $RepoRoot
+
 foreach ($dir in @(
     $InstallRoot,
     (Join-Path $InstallRoot "tools"),

@@ -9,7 +9,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "deploy" / "windows" / "Caddyfile.example"
-TESTS = ROOT / "deploy" / "windows" / "coexist.tests.ps1"
 
 
 def test_caddyfile_example_fronts_apache_and_simcore():
@@ -29,12 +28,12 @@ def test_caddyfile_example_fronts_apache_and_simcore():
     assert text.count("profile shortlived") == 1
 
 
-def test_powershell_coexist_unit_tests():
+def _run_powershell(script_name: str) -> None:
     pwsh = shutil.which("pwsh")
     if not pwsh:
         pytest.skip("pwsh is not installed")
     completed = subprocess.run(
-        [pwsh, "-NoProfile", "-File", str(TESTS)],
+        [pwsh, "-NoProfile", "-File", str(ROOT / "deploy" / "windows" / script_name)],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -44,3 +43,11 @@ def test_powershell_coexist_unit_tests():
         sys.stdout.write(completed.stdout)
         sys.stderr.write(completed.stderr)
     assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_powershell_coexist_unit_tests():
+    _run_powershell("coexist.tests.ps1")
+
+
+def test_powershell_bootstrap_unit_tests():
+    _run_powershell("bootstrap.tests.ps1")
