@@ -1,0 +1,15 @@
+# Example of the file bootstrap.ps1 writes to C:\simcore\Caddyfile.
+# The live file is generated from API_DOMAIN and API_PORT in .env.prod.
+# 157-85-96-139.sslip.io resolves to 157.85.96.139, so Let's Encrypt can issue a certificate
+# before you own a domain. Change API_DOMAIN later and run update.ps1.
+
+{
+	storage file_system {
+		root C:/simcore/caddy-data
+	}
+}
+
+157-85-96-139.sslip.io {
+	encode gzip
+	reverse_proxy 127.0.0.1:8741
+}
