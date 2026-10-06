@@ -38,12 +38,95 @@ function Update-SimcorePath {
     $env:Path = "$machine;$user"
 }
 
+function Test-SimcoreDownloadComplete {
+    param([long]$ActualBytes, [long]$ExpectedBytes, [long]$MinimumBytes)
+    if ($ExpectedBytes -gt 0) { return $ActualBytes -eq $ExpectedBytes }
+    if ($MinimumBytes -lt 1) { $MinimumBytes = 1 }
+    return $ActualBytes -ge $MinimumBytes
+}
+
+function Test-SimcoreFileMagic {
+    param([int]$First, [int]$Second, [string]$Kind)
+    if ($Kind -eq "exe") { return ($First -eq 0x4D -and $Second -eq 0x5A) }
+    if ($Kind -eq "zip") { return ($First -eq 0x50 -and $Second -eq 0x4B) }
+    return $true
+}
+
+function Get-SimcoreDownloadKind {
+    param([string]$Path)
+    $ext = [System.IO.Path]::GetExtension($Path)
+    if ($ext -eq ".exe") { return "exe" }
+    if ($ext -eq ".zip") { return "zip" }
+    return "any"
+}
+
+function Get-SimcoreFileMagicBytes {
+    param([string]$Path)
+    $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+    try {
+        return @($stream.ReadByte(), $stream.ReadByte())
+    } finally {
+        $stream.Dispose()
+    }
+}
+
+function Get-SimcoreContentLength {
+    param([string]$Url)
+    try {
+        $head = Invoke-WebRequest -Uri $Url -Method Head -UseBasicParsing
+        $value = [string]$head.Headers["Content-Length"]
+        $parsed = [long]0
+        if ($value -and [long]::TryParse($value, [ref]$parsed) -and $parsed -gt 0) { return $parsed }
+    } catch {
+        Write-Host "Could not read Content-Length for $Url. The download will be checked against the minimum size."
+    }
+    return [long]0
+}
+
 function Save-SimcoreDownload {
-    param([string]$Url, [string]$Destination)
+    param(
+        [string]$Url,
+        [string]$Destination,
+        [long]$MinimumBytes = 1
+    )
     $dir = Split-Path -Parent $Destination
     if ($dir) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+    $kind = Get-SimcoreDownloadKind $Destination
+    $expected = Get-SimcoreContentLength $Url
+    if ($expected -gt 0 -and (Test-Path -LiteralPath $Destination)) {
+        $existingLength = [long](Get-Item -LiteralPath $Destination).Length
+        $existingMagic = Get-SimcoreFileMagicBytes $Destination
+        $existingOk = (Test-SimcoreDownloadComplete -ActualBytes $existingLength -ExpectedBytes $expected -MinimumBytes $MinimumBytes) -and
+            (Test-SimcoreFileMagic -First $existingMagic[0] -Second $existingMagic[1] -Kind $kind)
+        if ($existingOk) {
+            Write-Host "Using complete download $Destination ($existingLength bytes)"
+            return
+        }
+    }
+    $partial = "$Destination.partial"
     Write-Host "Downloading $Url"
-    Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing
+    try {
+        if (Test-Path -LiteralPath $partial) { Remove-Item -LiteralPath $partial -Force }
+        $response = Invoke-WebRequest -Uri $Url -OutFile $partial -UseBasicParsing -PassThru
+        $actual = [long](Get-Item -LiteralPath $partial).Length
+        $declared = [long]0
+        $headerLength = [string]$response.Headers["Content-Length"]
+        if ($headerLength) { [void][long]::TryParse($headerLength, [ref]$declared) }
+        if ($declared -le 0) { $declared = $expected }
+        if (-not (Test-SimcoreDownloadComplete -ActualBytes $actual -ExpectedBytes $declared -MinimumBytes $MinimumBytes)) {
+            $wanted = $(if ($declared -gt 0) { "$declared" } else { "at least $MinimumBytes" })
+            throw "Download of $Url is $actual bytes (expected $wanted). The incomplete file was discarded."
+        }
+        $magic = Get-SimcoreFileMagicBytes $partial
+        if (-not (Test-SimcoreFileMagic -First $magic[0] -Second $magic[1] -Kind $kind)) {
+            throw "Download of $Url is not a valid $kind file. The file was discarded."
+        }
+        if (Test-Path -LiteralPath $Destination) { Remove-Item -LiteralPath $Destination -Force }
+        [System.IO.File]::Move($partial, $Destination)
+    } catch {
+        if (Test-Path -LiteralPath $partial) { Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue }
+        throw
+    }
 }
 
 function Read-SimcoreEnv {
@@ -96,8 +179,36 @@ function Write-SimcoreEnv {
         }
     }
     $utf8 = New-Object System.Text.UTF8Encoding $false
-    [System.IO.File]::WriteAllLines($Path, $lines, $utf8)
-    & icacls $Path /inheritance:r /grant:r "SYSTEM:(R)" "Administrators:(F)" | Out-Null
+    $directory = Split-Path -Parent $Path
+    if (-not $directory) { $directory = [System.IO.Directory]::GetCurrentDirectory() }
+    if (-not (Test-Path -LiteralPath $directory)) {
+        New-Item -ItemType Directory -Force -Path $directory | Out-Null
+    }
+    # Write the whole file beside the destination, then replace it. A full disk
+    # throws while the temporary file is incomplete and the previous .env.prod stays.
+    $temp = Join-Path $directory (".{0}.{1}.tmp" -f (Split-Path -Leaf $Path), ([guid]::NewGuid().ToString("N")))
+    try {
+        [System.IO.File]::WriteAllLines($temp, $lines.ToArray(), $utf8)
+        $written = [System.IO.File]::ReadAllText($temp, $utf8)
+        if ([string]::IsNullOrWhiteSpace($written)) {
+            throw "Refusing to replace $Path with an empty file."
+        }
+        if (Test-Path -LiteralPath $Path) {
+            [System.IO.File]::Replace($temp, $Path, [NullString]::Value)
+        } else {
+            [System.IO.File]::Move($temp, $Path)
+        }
+    } catch {
+        if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }
+        if ($_.Exception.Message -match "not enough space|enough space on the disk|disk full|No space left") {
+            throw "Could not write $Path because the disk is full. Any previous copy of the file was left in place. Free space, then run bootstrap again."
+        }
+        throw
+    }
+    $icacls = Get-Command icacls.exe -ErrorAction SilentlyContinue
+    if ($icacls) {
+        & $icacls.Source $Path /inheritance:r /grant:r "SYSTEM:(R)" "Administrators:(F)" | Out-Null
+    }
 }
 
 function Import-SimcoreEnvToProcess {
@@ -177,10 +288,68 @@ function Install-WithWinget {
     )
     if ($Override) { $args += @("--override", $Override) }
     & winget.exe @args
-    # 0 = installed. -1978335189 = no update / already installed.
+    # 0 = installed. -1978335189 (0x8A15002B) = no update / already installed.
     if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq -1978335189) { return $true }
-    Write-Warning "winget exit $LASTEXITCODE for $Id"
+    Write-Warning (Format-WingetFailureMessage -Id $Id -ExitCode $LASTEXITCODE)
     return $false
+}
+
+function Format-WingetFailureMessage {
+    param([string]$Id, $ExitCode)
+    $numeric = 0
+    if (-not [int]::TryParse([string]$ExitCode, [ref]$numeric)) {
+        return "winget could not install ${Id}: exit $ExitCode."
+    }
+    $hex = "0x{0:X8}" -f $numeric
+    # 0x8A150006 is APPINSTALLER_CLI_ERROR_SHELLEXEC_INSTALL_FAILED: winget started
+    # the package's installer and that process returned an error. For PostgreSQL
+    # the usual causes are an empty superuser password, a half-finished install,
+    # or a full disk. winget's own disk-full code is the different value 0x8A150105.
+    if ($hex -eq "0x8A150006") {
+        return "winget could not install ${Id}: exit $numeric ($hex, SHELLEXEC_INSTALL_FAILED). The installer program ran and returned an error. An empty superuser password, a half-finished PostgreSQL install, or a full disk are the usual causes."
+    }
+    return "winget could not install ${Id}: exit $numeric ($hex)."
+}
+
+function Assert-SimcoreSecretPresent {
+    param([string]$Value, [string]$Name)
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        throw "$Name is empty. Refusing to run an installer without it. Run deploy\windows\bootstrap.ps1 again so it can fill a blank .env.prod, or restore that file from a backup."
+    }
+}
+
+function Assert-SimcoreInstallerArguments {
+    param(
+        [string]$FilePath,
+        [string[]]$ArgumentList
+    )
+    if ([string]::IsNullOrWhiteSpace($FilePath)) {
+        throw "Installer path is empty."
+    }
+    if ($null -eq $ArgumentList) { return }
+    foreach ($arg in $ArgumentList) {
+        if ($null -eq $arg -or [string]::IsNullOrWhiteSpace([string]$arg)) {
+            throw "Refusing to start $FilePath because an installer argument is empty. This usually means a password in .env.prod was blank."
+        }
+    }
+}
+
+function Test-SimcoreInstallerExit {
+    param($ExitCode)
+    if ($null -eq $ExitCode -or [string]$ExitCode -eq "") { return $false }
+    $code = [int]$ExitCode
+    # 3010 is the Windows installer code for success plus a reboot.
+    return ($code -eq 0 -or $code -eq 3010)
+}
+
+function Start-SimcoreInstaller {
+    param(
+        [string]$FilePath,
+        [string[]]$ArgumentList
+    )
+    Assert-SimcoreInstallerArguments -FilePath $FilePath -ArgumentList $ArgumentList
+    if ($null -eq $ArgumentList) { $ArgumentList = @() }
+    return Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -Wait -PassThru
 }
 
 function Ensure-Git {
@@ -197,12 +366,12 @@ function Ensure-Python {
     Update-SimcorePath
     if (Find-Python312) { return }
     $installer = Join-Path $env:TEMP "python-3.12.10-amd64.exe"
-    Save-SimcoreDownload "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe" $installer
-    $proc = Start-Process -FilePath $installer -ArgumentList @(
+    Save-SimcoreDownload "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe" $installer 1000000
+    $proc = Start-SimcoreInstaller -FilePath $installer -ArgumentList @(
         "/quiet", "InstallAllUsers=1", "PrependPath=1", "Include_test=0", "Include_pip=1"
-    ) -Wait -PassThru
-    if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010) {
-        throw "Python installer failed with exit code $($proc.ExitCode)"
+    )
+    if (-not (Test-SimcoreInstallerExit $proc.ExitCode)) {
+        throw "Python installer failed with exit code $($proc.ExitCode)."
     }
     Update-SimcorePath
     if (-not (Find-Python312)) { throw "Python 3.12 installed but python.exe was not found." }
@@ -214,7 +383,7 @@ function Ensure-Caddy {
     if (Test-Path $dest) { return $dest }
     $zip = Join-Path $env:TEMP "caddy_2.11.7_windows_amd64.zip"
     $extract = Join-Path $env:TEMP "caddy-extract"
-    Save-SimcoreDownload "https://github.com/caddyserver/caddy/releases/download/v2.11.7/caddy_2.11.7_windows_amd64.zip" $zip
+    Save-SimcoreDownload "https://github.com/caddyserver/caddy/releases/download/v2.11.7/caddy_2.11.7_windows_amd64.zip" $zip 1000000
     if (Test-Path $extract) { Remove-Item $extract -Recurse -Force }
     Expand-Archive -Path $zip -DestinationPath $extract -Force
     $found = Get-ChildItem $extract -Filter "caddy.exe" -Recurse | Select-Object -First 1
@@ -228,7 +397,7 @@ function Ensure-WinSW {
     param([string]$InstallRoot)
     $dest = Join-Path $InstallRoot "tools\WinSW.NET4.exe"
     if (-not (Test-Path $dest)) {
-        Save-SimcoreDownload "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW.NET4.exe" $dest
+        Save-SimcoreDownload "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW.NET4.exe" $dest 1000000
     }
     return $dest
 }
@@ -236,21 +405,29 @@ function Ensure-WinSW {
 function Ensure-PostgresInstalled {
     param([string]$SuperPassword)
     if (Find-Psql) { return }
+    Assert-SimcoreSecretPresent -Value $SuperPassword -Name "POSTGRES_SUPER_PASSWORD"
     $override = "--mode unattended --unattendedmodeui none --superpassword $SuperPassword --serverport 5432 --enable-components server,commandlinetools"
-    Install-WithWinget -Id "PostgreSQL.PostgreSQL.16" -Override $override | Out-Null
+    $wingetOk = Install-WithWinget -Id "PostgreSQL.PostgreSQL.16" -Override $override
     Update-SimcorePath
     if (Find-Psql) { return }
+    if (-not $wingetOk) {
+        Write-Host "winget did not install PostgreSQL. Downloading the EnterpriseDB installer instead."
+    }
     $installer = Join-Path $env:TEMP "postgresql-16.15-5-windows-x64.exe"
-    Save-SimcoreDownload "https://get.enterprisedb.com/postgresql/postgresql-16.15-5-windows-x64.exe" $installer
-    $proc = Start-Process -FilePath $installer -ArgumentList @(
+    # postgresql-16.15-5-windows-x64.exe was 404741880 bytes on 2026-10-06.
+    # 300 MB rejects an error page or a short download when Content-Length is missing.
+    Save-SimcoreDownload "https://get.enterprisedb.com/postgresql/postgresql-16.15-5-windows-x64.exe" $installer 314572800
+    $proc = Start-SimcoreInstaller -FilePath $installer -ArgumentList @(
         "--mode", "unattended",
         "--unattendedmodeui", "none",
         "--superpassword", $SuperPassword,
         "--serverport", "5432",
         "--enable-components", "server,commandlinetools"
-    ) -Wait -PassThru
-    if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010) {
-        throw "PostgreSQL installer failed with exit code $($proc.ExitCode). Log: $env:TEMP\install-postgresql.log"
+    )
+    if (-not (Test-SimcoreInstallerExit $proc.ExitCode)) {
+        $codeText = "(no exit code)"
+        if ($null -ne $proc -and $null -ne $proc.ExitCode) { $codeText = [string]$proc.ExitCode }
+        throw "PostgreSQL installer failed with exit code $codeText. The download size was checked before it ran. Log: $env:TEMP\install-postgresql.log"
     }
     Update-SimcorePath
     if (-not (Find-Psql)) { throw "PostgreSQL installed but psql.exe was not found." }
@@ -641,6 +818,77 @@ function Invoke-SimcoreGitPull {
     if ($LASTEXITCODE -ne 0) { throw "git pull --ff-only origin main failed" }
 }
 
+function Get-SimcoreDatabaseUrlForPassword {
+    param([string]$Url, [string]$Password)
+    $escaped = [uri]::EscapeDataString([string]$Password)
+    $canonical = "postgresql+psycopg://simcore:${escaped}@127.0.0.1:5432/simcore"
+    if ([string]::IsNullOrWhiteSpace($Url)) { return $canonical }
+    if ($Url -match '^(?<prefix>postgresql(?:\+[A-Za-z0-9]+)?:\/\/[^:/?#]+:)(?<secret>[^@]*)(?<suffix>@.+)$') {
+        if ($Matches["secret"] -eq $escaped) { return $Url }
+        return "$($Matches['prefix'])$escaped$($Matches['suffix'])"
+    }
+    return $canonical
+}
+
+function Complete-SimcoreProductionEnv {
+    param(
+        [hashtable]$Map,
+        [string]$InstallRoot,
+        [string]$ApiDomain,
+        [string]$ApiPort,
+        [string]$AcmeEmail
+    )
+    if ($null -eq $Map) { $Map = @{} }
+    $changed = $false
+    if ([string]::IsNullOrWhiteSpace([string]$Map["POSTGRES_SUPER_PASSWORD"])) {
+        $Map["POSTGRES_SUPER_PASSWORD"] = New-SimcoreSecret
+        $changed = $true
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$Map["SIMCORE_DB_PASSWORD"])) {
+        $Map["SIMCORE_DB_PASSWORD"] = New-SimcoreSecret
+        $changed = $true
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$Map["SIMCORE_ADMIN_TOKEN"])) {
+        $Map["SIMCORE_ADMIN_TOKEN"] = New-SimcoreSecret
+        $changed = $true
+    }
+    $databaseUrl = Get-SimcoreDatabaseUrlForPassword -Url ([string]$Map["SIMCORE_DATABASE_URL"]) -Password ([string]$Map["SIMCORE_DB_PASSWORD"])
+    if ([string]$Map["SIMCORE_DATABASE_URL"] -ne $databaseUrl) {
+        $Map["SIMCORE_DATABASE_URL"] = $databaseUrl
+        $changed = $true
+    }
+    $defaults = @{
+        SIMCORE_ENV = "production"
+        SIMCORE_ENABLE_ADMIN = "false"
+        SIMCORE_EMBEDDED_WORKER = "false"
+        SIMCORE_CORS_ORIGINS = "https://nustanakritwithai.github.io,http://127.0.0.1:8080,http://localhost:8080"
+        SIMCORE_WORKER_POLL_SECONDS = "1.0"
+    }
+    foreach ($key in @($defaults.Keys)) {
+        if ([string]::IsNullOrWhiteSpace([string]$Map[$key])) {
+            $Map[$key] = [string]$defaults[$key]
+            $changed = $true
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$Map["API_DOMAIN"]) -and -not [string]::IsNullOrWhiteSpace($ApiDomain)) {
+        $Map["API_DOMAIN"] = $ApiDomain
+        $changed = $true
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$Map["API_PORT"]) -and -not [string]::IsNullOrWhiteSpace($ApiPort)) {
+        $Map["API_PORT"] = $ApiPort
+        $changed = $true
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$Map["SIMCORE_INSTALL_ROOT"]) -and -not [string]::IsNullOrWhiteSpace($InstallRoot)) {
+        $Map["SIMCORE_INSTALL_ROOT"] = $InstallRoot
+        $changed = $true
+    }
+    if (-not $Map.ContainsKey("ACME_EMAIL")) {
+        $Map["ACME_EMAIL"] = [string]$AcmeEmail
+        $changed = $true
+    }
+    return [pscustomobject]@{ Map = $Map; Changed = [bool]$changed }
+}
+
 function New-SimcoreProductionEnv {
     param(
         [string]$Path,
@@ -649,32 +897,74 @@ function New-SimcoreProductionEnv {
         [string]$ApiPort,
         [string]$AcmeEmail
     )
-    if (Test-Path $Path) {
-        return Read-SimcoreEnv $Path
+    $existed = Test-Path -LiteralPath $Path
+    $map = @{}
+    if ($existed) { $map = Read-SimcoreEnv $Path }
+    $completed = Complete-SimcoreProductionEnv -Map $map -InstallRoot $InstallRoot -ApiDomain $ApiDomain -ApiPort $ApiPort -AcmeEmail $AcmeEmail
+    if ((-not $existed) -or $completed.Changed) {
+        Write-SimcoreEnv -Path $Path -Map $completed.Map
+        if ($existed) {
+            Write-Host "Filled blank values in $Path. Passwords and the admin token that already had a value were left unchanged."
+        } else {
+            Write-Host "Wrote $Path"
+            Write-Host "The database password and admin token were generated into that file. They are not printed here."
+        }
     }
-    $super = New-SimcoreSecret
-    $dbPass = New-SimcoreSecret
-    $admin = New-SimcoreSecret
-    $urlPass = [uri]::EscapeDataString($dbPass)
-    $map = @{
-        SIMCORE_ENV = "production"
-        SIMCORE_DATABASE_URL = "postgresql+psycopg://simcore:${urlPass}@127.0.0.1:5432/simcore"
-        SIMCORE_ADMIN_TOKEN = $admin
-        SIMCORE_ENABLE_ADMIN = "false"
-        SIMCORE_EMBEDDED_WORKER = "false"
-        SIMCORE_CORS_ORIGINS = "https://nustanakritwithai.github.io,http://127.0.0.1:8080,http://localhost:8080"
-        SIMCORE_WORKER_POLL_SECONDS = "1.0"
-        API_DOMAIN = $ApiDomain
-        API_PORT = $ApiPort
-        ACME_EMAIL = $AcmeEmail
-        POSTGRES_SUPER_PASSWORD = $super
-        SIMCORE_DB_PASSWORD = $dbPass
-        SIMCORE_INSTALL_ROOT = $InstallRoot
+    return $completed.Map
+}
+
+function Format-SimcoreLowDiskMessage {
+    param([string]$Root, [long]$AvailableBytes, [long]$MinimumBytes)
+    $freeText = "{0:N2}" -f ($AvailableBytes / 1GB)
+    $needText = "{0:N0}" -f ($MinimumBytes / 1GB)
+    return "Not enough free space on $Root. Bootstrap needs about $needText GB free on this drive. This drive has $freeText GB free. Free space, then run bootstrap again."
+}
+
+function Test-SimcoreDiskBudget {
+    param([long]$AvailableBytes, [long]$MinimumBytes)
+    return $AvailableBytes -ge $MinimumBytes
+}
+
+function Get-SimcoreDriveFreeSpace {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { throw "No path was given for the disk space check." }
+    $root = [System.IO.Path]::GetPathRoot($Path)
+    if ([string]::IsNullOrWhiteSpace($root)) { throw "Could not find the drive for $Path." }
+    $info = New-Object System.IO.DriveInfo ($root)
+    if (-not $info.IsReady) { throw "Drive $root is not ready. Bootstrap cannot check free space." }
+    return [pscustomobject]@{ Root = [string]$info.Name; AvailableBytes = [long]$info.AvailableFreeSpace }
+}
+
+function Assert-SimcoreFreeDisk {
+    param(
+        [string]$Path,
+        [long]$MinimumBytes = 3GB
+    )
+    $drive = Get-SimcoreDriveFreeSpace $Path
+    if (-not (Test-SimcoreDiskBudget -AvailableBytes $drive.AvailableBytes -MinimumBytes $MinimumBytes)) {
+        throw (Format-SimcoreLowDiskMessage -Root $drive.Root -AvailableBytes $drive.AvailableBytes -MinimumBytes $MinimumBytes)
     }
-    Write-SimcoreEnv -Path $Path -Map $map
-    Write-Host "Wrote $Path"
-    Write-Host "The database password and admin token were generated into that file. They are not printed here."
-    return $map
+    Write-Host ("{0} has {1:N1} GB free." -f $drive.Root, ($drive.AvailableBytes / 1GB))
+}
+
+function Assert-SimcoreBootstrapDisk {
+    param([string]$InstallRoot, [string]$RepoRoot)
+    if ([string]::IsNullOrWhiteSpace($InstallRoot)) { throw "Install root is empty." }
+    Assert-SimcoreFreeDisk -Path $InstallRoot
+    $installRootDrive = [System.IO.Path]::GetPathRoot($InstallRoot)
+    $seen = @{}
+    if (-not [string]::IsNullOrWhiteSpace($installRootDrive)) {
+        $seen[$installRootDrive.TrimEnd('\').TrimEnd('/').ToLowerInvariant()] = $true
+    }
+    foreach ($path in @($RepoRoot, [string]$env:TEMP)) {
+        if ([string]::IsNullOrWhiteSpace($path)) { continue }
+        $root = [System.IO.Path]::GetPathRoot($path)
+        if ([string]::IsNullOrWhiteSpace($root)) { continue }
+        $key = $root.TrimEnd('\').TrimEnd('/').ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        Assert-SimcoreFreeDisk -Path $path
+    }
 }
 
 . "$PSScriptRoot\CoexistLib.ps1"

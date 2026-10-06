@@ -702,6 +702,7 @@ function Restart-ApacheServer {
         return
     }
     Write-Warning "Apache is not installed as a Windows service. It was started in the background and will not come back on its own after a reboot. Start it from XAMPP, or install the service with httpd -k install, after you confirm the localhost ports."
+    Assert-SimcoreInstallerArguments -FilePath $Apache.Executable -ArgumentList @("-d", $Apache.ServerRoot)
     Start-Process -FilePath $Apache.Executable -ArgumentList @("-d", $Apache.ServerRoot) -WindowStyle Hidden | Out-Null
 }
 
