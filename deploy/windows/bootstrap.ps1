@@ -87,13 +87,29 @@ Ensure-Venv -RepoRoot $RepoRoot
 Import-SimcoreEnvToProcess -Path $envFile
 Invoke-SimcoreMigrations -RepoRoot $RepoRoot
 
-Stop-SiteBindings
+$foreignPorts = @(Get-ForeignWebListeners)
+if ($foreignPorts.Count -eq 0) {
+    Stop-SiteBindings
+} else {
+    Write-Host "Ports 80 and 443 are already taken. IIS will not be stopped, and Caddy will not be started."
+}
 Enable-WebFirewall
 Write-SimcoreCaddyfile -EnvMap $cfg -InstallRoot $InstallRoot | Out-Null
 Install-SimcoreWindowsServices -RepoRoot $RepoRoot -InstallRoot $InstallRoot -EnvMap $cfg -Reinstall
 
 [Environment]::SetEnvironmentVariable("SIMCORE_ROOT", $RepoRoot, "Machine")
 $env:SIMCORE_ROOT = $RepoRoot
+
+if ($foreignPorts.Count -gt 0) {
+    Set-SimcoreCaddyStartup -Mode Manual -Stop
+    Start-SimcoreStack -SkipCaddy
+    Wait-SimcoreApi -Port $cfg["API_PORT"]
+    Write-ForeignWebPortHelp -Foreign $foreignPorts -ScriptRoot $PSScriptRoot
+    Write-Host "Bootstrap installed the API and the worker, then stopped before publishing Caddy."
+    Write-Host "Local health:  http://127.0.0.1:$($cfg['API_PORT'])/health/ready"
+    Write-Host "Secrets file:  $envFile"
+    exit 2
+}
 
 Start-SimcoreStack
 Wait-SimcoreApi -Port $cfg["API_PORT"]
