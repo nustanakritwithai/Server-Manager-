@@ -1,15 +1,47 @@
-# Example of the file bootstrap.ps1 writes to C:\simcore\Caddyfile.
-# The live file is generated from API_DOMAIN and API_PORT in .env.prod.
-# 157-85-96-139.sslip.io resolves to 157.85.96.139, so Let's Encrypt can issue a certificate
-# before you own a domain. Change API_DOMAIN later and run update.ps1.
+# Generated on the VPS as C:\simcore\Caddyfile when Apache shares the machine.
+# coexist-apache.ps1 and, after that, update.ps1 write this shape from .env.prod.
+# Caddy 2.11.7 listens on public 80/443.
+# The sslip.io name is the game API. Every other HTTP host, and https://157.85.96.139,
+# are reverse-proxied to Apache on localhost. The IP certificate is Let's Encrypt's
+# short-lived profile (about six days), which Caddy renews itself.
 
 {
 	storage file_system {
 		root C:/simcore/caddy-data
 	}
+	default_sni 157.85.96.139
 }
 
 157-85-96-139.sslip.io {
 	encode gzip
 	reverse_proxy 127.0.0.1:8741
+}
+
+http:// {
+	reverse_proxy 127.0.0.1:8080 {
+		header_up Host {http.request.host}
+		header_up X-Forwarded-For {http.request.remote.host}
+		header_up X-Forwarded-Proto http
+		header_up X-Forwarded-Host {http.request.host}
+	}
+}
+
+https://157.85.96.139 {
+	tls {
+		issuer acme {
+			profile shortlived
+		}
+		renewal_window_ratio 0.5
+	}
+	reverse_proxy https://127.0.0.1:8443 {
+		header_up Host {http.request.host}
+		header_up X-Forwarded-For {http.request.remote.host}
+		header_up X-Forwarded-Proto https
+		header_up X-Forwarded-Host {http.request.host}
+		transport http {
+			tls
+			tls_insecure_skip_verify
+			tls_server_name 157.85.96.139
+		}
+	}
 }

@@ -57,6 +57,18 @@ try {
     }
     Write-SimcoreCaddyfile -EnvMap $cfg -InstallRoot $installRoot | Out-Null
     Install-SimcoreWindowsServices -RepoRoot $RepoRoot -InstallRoot $installRoot -EnvMap $cfg
+    # Checked after Caddy is stopped. Ports are free when this host already fronts Apache,
+    # and occupied when Apache still owns 80/443. In that case do not start Caddy.
+    $foreignPorts = @(Get-ForeignWebListeners)
+    if ($foreignPorts.Count -gt 0) {
+        Set-SimcoreCaddyStartup -Mode Manual -Stop
+        Start-SimcoreStack -SkipCaddy
+        $started = $true
+        Wait-SimcoreApi -Port $cfg["API_PORT"]
+        Write-ForeignWebPortHelp -Foreign $foreignPorts -ScriptRoot $PSScriptRoot
+        Write-Warning "Update finished without starting Caddy. The public API is not on port 443 until coexist-apache.ps1 succeeds."
+        return
+    }
     Start-SimcoreStack
     $started = $true
     Wait-SimcoreApi -Port $cfg["API_PORT"]
@@ -64,6 +76,14 @@ try {
 } finally {
     if (-not $started) {
         Write-Warning "Update failed. Attempting to start the services again."
-        try { Start-SimcoreStack } catch { Write-Warning $_ }
+        try {
+            $foreignPorts = @(Get-ForeignWebListeners)
+            if ($foreignPorts.Count -gt 0) {
+                Set-SimcoreCaddyStartup -Mode Manual -Stop
+                Start-SimcoreStack -SkipCaddy
+            } else {
+                Start-SimcoreStack
+            }
+        } catch { Write-Warning $_ }
     }
 }

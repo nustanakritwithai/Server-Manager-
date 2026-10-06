@@ -129,7 +129,9 @@ Open http://127.0.0.1:8080 and point the API field at http://127.0.0.1:8741. Dev
 
 Production is the Windows Server 2025 machine at **157.85.96.139** (sign in as **Administrator** over Remote Desktop). Docker Compose stays the local development setup. Production does not run Linux containers.
 
-The machine runs PostgreSQL 16 (localhost only), the API on `127.0.0.1:8741`, the standalone worker, and Caddy on ports 80 and 443. WinSW registers `simcore-api`, `simcore-worker`, and `simcore-caddy` as automatic services that restart after a crash. There is no domain yet, so the default public name is **`157-85-96-139.sslip.io`**. That name resolves to `157.85.96.139`, which is enough for Caddy to get a Let's Encrypt certificate.
+The machine runs PostgreSQL 16 (localhost only), the API on `127.0.0.1:8741`, the standalone worker, and Caddy on public ports 80 and 443. WinSW registers `simcore-api`, `simcore-worker`, and `simcore-caddy` as automatic services that restart after a crash. There is no domain yet, so the default public name is **`157-85-96-139.sslip.io`**. That name resolves to `157.85.96.139`, which is enough for Caddy to get a Let's Encrypt certificate.
+
+This VPS already runs Apache (XAMPP: Apache 2.4, OpenSSL, PHP) for PocketMonster. Apache has to keep serving `https://157.85.96.139/` and its other hosts. Caddy sits in front: it owns ports 80 and 443, serves the game API on `157-85-96-139.sslip.io`, and reverse-proxies every other host to Apache on localhost. See [Apache is already serving this VPS](#apache-is-already-serving-this-vps) before expecting the public health URL to work.
 
 The real system clock is what production uses. `POST /v1/admin/clock/advance` stays behind the admin token, and the whole admin API is off unless `SIMCORE_ENABLE_ADMIN=true`.
 
@@ -162,7 +164,54 @@ powershell -ExecutionPolicy Bypass -File C:\simcore\app\deploy\windows\bootstrap
 
 That installs Python 3.12, PostgreSQL 16, Caddy 2.11.7, and WinSW; creates the `simcore` database role with a random password; generates `SIMCORE_ADMIN_TOKEN`; writes `C:\simcore\app\.env.prod`; opens Windows Firewall for inbound TCP **80** and **443** only; removes any inbound **5432** rule and binds PostgreSQL to localhost; runs Alembic; seeds Alice and Bob only when the database has no players; then starts the three services. RDP (3389) is left alone. The script does not print the password or the admin token.
 
-5. On the VPS, open `https://157-85-96-139.sslip.io/health`. The first request can take about a minute while the certificate is issued. A healthy process returns `{"status":"ok"}`. If it does not, read `C:\simcore\logs`. If the hosting panel has a firewall in front of Windows, allow inbound TCP 80 and 443 there too. Do not allow 5432.
+If another program is already listening on port 80 or 443, bootstrap does not stop it, does not disable IIS, and does not start Caddy. The API and the worker still start on localhost, and the script exits with code 2. The message points at `deploy/windows/coexist-apache.ps1`. Run that next. Re-running bootstrap is safe: it keeps the existing `.env.prod` secrets.
+
+5. On the VPS, open `https://157-85-96-139.sslip.io/health`. The first request can take about a minute while the certificate is issued. A healthy process returns `{"status":"ok"}`. If bootstrap exited with code 2, this URL stays on Apache until the coexistence script below has finished. If it does not, read `C:\simcore\logs`. If the hosting panel has a firewall in front of Windows, allow inbound TCP 80 and 443 there too. Do not allow 5432.
+
+### Apache is already serving this VPS
+
+Apache 2.4.58 (the XAMPP build with PHP 8.0) already listens on ports 80 and 443. `https://157.85.96.139/` redirects to PocketMonster, and other paths may be a PHP API. Those responses have to stay as they are. A short-lived Let's Encrypt certificate for the IP address is what Apache presents today.
+
+`deploy/windows/coexist-apache.ps1` is the one-time step. It detects `httpd.exe` (Windows service such as `Apache2.4`, a running process, or `C:\xampp`), backs up every config file it edits under `C:\simcore\apache-backups\<timestamp>`, moves Apache's public listeners to `127.0.0.1:8080` (HTTP) and `127.0.0.1:8443` (HTTPS), runs `httpd -t`, and only then restarts Apache. Caddy binds 80 and 443 and terminates TLS:
+
+- `https://157-85-96-139.sslip.io` is proxied to the simcore API on `127.0.0.1:8741`.
+- Any other plain HTTP host is proxied to Apache on `127.0.0.1:8080`, with the original `Host` header, so Apache's existing port-80 redirects still run.
+- `https://157.85.96.139` is proxied to Apache's SSL vhost on `127.0.0.1:8443`, again with the original `Host`. PocketMonster's redirect stays an Apache response. Caddy 2.11.7 obtains the Let's Encrypt short-lived IP certificate itself (`profile shortlived`, renewed about halfway through the six-day lifetime). The script disables a win-acme, certbot, or Certify renewal task when it finds one, and comments Apache `mod_md` directives, so the old client does not take ports 80 and 443 back. Apache's certificate files remain only for that localhost hop.
+
+PostgreSQL stays on localhost. The firewall is still only public 80 and 443. The script does not print secrets. It is safe to run again: a second run keeps the first backup as the rollback target.
+
+The commands below assume the repo is already at `C:\simcore\app`, `main` already contains the first Windows deploy, and bootstrap has already been run once. Paste them into an Administrator PowerShell over RDP. Do not run `update.ps1`, and do not dispatch **Deploy to Windows VPS**, until this coexistence change is on `main`. An older `update.ps1` rewrites `C:\simcore\Caddyfile` without the Apache routes.
+
+```powershell
+cd C:\simcore\app
+git fetch origin cursor/apache-caddy-coexist-31fc
+git checkout cursor/apache-caddy-coexist-31fc
+powershell -ExecutionPolicy Bypass -File C:\simcore\app\deploy\windows\coexist-apache.ps1
+```
+
+`.env.prod` is gitignored, so the checkout leaves the database password and admin token in place.
+
+Verify both sites from that same window. The first health request can take about a minute while Caddy issues certificates.
+
+```powershell
+curl.exe -fsS https://157-85-96-139.sslip.io/health
+curl.exe -sI https://157.85.96.139/
+```
+
+Health should print `{"status":"ok"}`. `https://157.85.96.139/` should still be a 302 whose `Location` is `https://pocketmonster-game.web.app/`. If the VPS cannot reach its own public addresses, check through the local Caddy instead:
+
+```powershell
+curl.exe --resolve 157-85-96-139.sslip.io:443:127.0.0.1 https://157-85-96-139.sslip.io/health
+curl.exe -sI --resolve 157.85.96.139:443:127.0.0.1 https://157.85.96.139/
+```
+
+Rollback puts Apache back on ports 80 and 443 and leaves the `simcore-caddy` service disabled so a reboot does not take those ports again:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\simcore\app\deploy\windows\rollback-apache.ps1
+```
+
+After this branch is merged, return the checkout to `main` with `git checkout main` and `git pull`. Later deploys keep the Apache upstreams because `.env.prod` records them.
 
 6. Install a GitHub Actions self-hosted runner so a push to `main` updates the server. In GitHub open **Settings → Actions → Runners → New self-hosted runner → Windows**, and copy the token that page shows. Back in the elevated PowerShell window:
 
@@ -180,7 +229,7 @@ Restart-Service $runner
 
 The space after `obj=` is required. LocalSystem is what lets the job restart the game services. The workflow is **push to main** and **manual dispatch** only. Do not add a pull-request trigger: this runner can restart Windows services, and a public pull request would run on the VPS.
 
-7. In GitHub, open **Actions → Deploy to Windows VPS** and run it, or push a commit to `main`. The job runs `deploy/windows/update.ps1`: `git pull`, `pip install`, `alembic upgrade`, seed if the world is still empty, then restart the services. Until the runner is online the job waits in the queue.
+7. After the coexistence change is on `main`, open **Actions → Deploy to Windows VPS** and run it, or push a commit to `main`. The job runs `deploy/windows/update.ps1`: `git pull`, `pip install`, `alembic upgrade`, seed if the world is still empty, then restart the services. `update.ps1` rewrites the Caddyfile from `.env.prod` and keeps the Apache upstreams. Until the runner is online the job waits in the queue. Leave this job queued until that merge; an older copy of the script would publish a Caddyfile that does not proxy Apache.
 
 8. Open https://nustanakritwithai.github.io/Server-Manager-/ and sign in as Alice or Bob. The page counts down from `arrive_at` on its own. Battle reports appear only after the worker has applied the arrival. If the services are down, the page says the API is unreachable instead of failing silently.
 
@@ -250,7 +299,7 @@ docs/GAME_RULES.md        the rules this server enforces
 alembic/                  schema migrations
 docker-compose.yml        local Postgres + API + worker
 web/                      static client for GitHub Pages
-deploy/windows/           VPS bootstrap, update, and Caddy example
+deploy/windows/           VPS bootstrap, Apache coexistence, update, and Caddy example
 .github/workflows/        Pages deploy and the self-hosted Windows update
 ```
 
