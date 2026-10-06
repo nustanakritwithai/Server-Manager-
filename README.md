@@ -89,7 +89,13 @@ Admin routes are on unless `SIMCORE_ENV=production`. In production set `SIMCORE_
 
 ## Run without Docker
 
-Postgres must already be running. The default URL is `postgresql+psycopg://simcore:simcore@127.0.0.1:5432/simcore`.
+Postgres must already be running. Settings come from the environment (`SIMCORE_` prefix). Copy the template and edit it if you are not using the defaults:
+
+```bash
+cp .env.example .env
+```
+
+`.env` is gitignored. The API and the worker read it when it is present; environment variables win over the file. The template only contains local placeholders: database user `simcore`, password `simcore`, and admin token `dev-admin`. With no `.env` and no variables set, the URL is `postgresql+psycopg://simcore:simcore@127.0.0.1:5432/simcore`.
 
 ```bash
 python3 -m venv .venv

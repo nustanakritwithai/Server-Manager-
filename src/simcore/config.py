@@ -6,7 +6,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Runtime settings. Environment variables use the SIMCORE_ prefix."""
 
-    model_config = SettingsConfigDict(env_prefix="SIMCORE_", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="SIMCORE_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     database_url: str = "postgresql+psycopg://simcore:simcore@127.0.0.1:5432/simcore"
     env: str = "development"
