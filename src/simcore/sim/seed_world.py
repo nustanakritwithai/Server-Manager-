@@ -1,8 +1,15 @@
-"""Initial world for CI bots.
+"""Opening totals the simulator checks against, and a dev-only direct insert.
 
-CI registers each bot over HTTP, then this module attaches cities and armies.
-Staging does not call it. A second call on a database that already has cities
-refuses, and it does not delete rows.
+CI and the load tool do not call ``seed_bots`` or ``seed_holdings``. Registration
+grants the home, the army, and the resources through the API. ``opening_resources``
+is zero because those stocks are ledger rows. ``opening_units`` is the configured
+starting army times the player count.
+
+``seed_bots`` and ``seed_holdings`` write city resource columns directly. They do
+not call the ledger, so a ledger integrity check or a restore drill on that world
+does not describe a registered player. They run only when ``SIMCORE_ENV`` is
+``dev``, ``development``, ``test``, or ``testing``. Production raises before any
+row is inserted. They are not a CLI and deploy does not call them.
 """
 
 from __future__ import annotations
@@ -50,18 +57,34 @@ def profile_for(index: int) -> str:
 
 
 def opening_resources(player_count: int) -> dict[str, int]:
-    """Sum of each resource placed on the map. Both cities of a player start equal."""
+    """Non-ledger baseline. Starting stocks are ledger rows, so this is zero.
 
-    cities = player_count * 2
-    return {name: amount * cities for name, amount in _HOME_RESOURCES.items()}
+    ``player_count`` is accepted so callers stay stable. It does not add a
+    hidden stock. A negative count is rejected.
+    """
+
+    if player_count < 0:
+        raise ValueError("player_count must be zero or greater")
+    return {"wood": 0, "food": 0, "iron": 0, "gold": 0}
 
 
 def opening_units(player_count: int, roster: str = "default") -> dict[str, int]:
-    units = _ROSTERS[roster]
+    """Units the start grant places on each player. ``roster`` no longer changes them.
+
+    The grant is one configured army per player. Training and casualties are
+    applied by the verifier on top of this total.
+    """
+
+    if player_count < 0:
+        raise ValueError("player_count must be zero or greater")
+    if roster not in _ROSTERS:
+        raise ValueError(f"unknown roster {roster}")
+    from simcore.config import get_settings
+    from simcore.game.start import parse_start_units
+
     totals: dict[str, int] = {}
-    for index in range(player_count):
-        for stack in units[profile_for(index)]:
-            totals[stack["type"]] = totals.get(stack["type"], 0) + int(stack["count"])
+    for stack in parse_start_units(get_settings().start_units):
+        totals[str(stack["type"])] = totals.get(str(stack["type"]), 0) + int(stack["count"]) * player_count
     return totals
 
 
@@ -69,12 +92,41 @@ def expected_army_count(player_count: int) -> int:
     return player_count
 
 
-def seed_bots(session: Session, now: datetime, player_count: int, roster: str = "default") -> dict[str, object]:
-    """Insert the bot world. Refuses when any player already exists.
+def _roster_unit_totals(player_count: int, roster: str) -> dict[str, int]:
+    units = _ROSTERS[roster]
+    totals: dict[str, int] = {}
+    for index in range(player_count):
+        for stack in units[profile_for(index)]:
+            totals[str(stack["type"])] = totals.get(str(stack["type"]), 0) + int(stack["count"])
+    return totals
 
-    Does not delete or truncate. A second call on a used database raises.
+
+_DEV_ENVS = frozenset({"dev", "development", "test", "testing"})
+
+
+def _require_dev_seed(name: str) -> None:
+    """Refuse a direct balance insert outside a local dev or test process."""
+
+    from simcore.config import get_settings
+
+    env = get_settings().env.strip().lower()
+    if env not in _DEV_ENVS:
+        raise RuntimeError(
+            f"{name} writes resource balances without the ledger and only runs when "
+            "SIMCORE_ENV is dev, development, test, or testing. "
+            "Register a player with POST /v1/auth/register so the start goes through the ledger."
+        )
+
+
+def seed_bots(session: Session, now: datetime, player_count: int, roster: str = "default") -> dict[str, object]:
+    """Insert a bot world without the ledger. Development and test only.
+
+    Refuses when any player already exists. Does not delete or truncate.
+    A second call on a used database raises. Production raises before the insert.
+    A ledger check on this world fails, because the city stocks have no ledger rows.
     """
 
+    _require_dev_seed("seed_bots")
     if player_count < 1:
         raise ValueError("player_count must be at least 1")
     if roster not in _ROSTERS:
@@ -97,8 +149,8 @@ def seed_bots(session: Session, now: datetime, player_count: int, roster: str = 
     return {
         "players": player_count,
         "profiles": [profile_for(index) for index in range(player_count)],
-        "resources": opening_resources(player_count),
-        "units": opening_units(player_count, roster=roster),
+        "resources": {name: amount * player_count * 2 for name, amount in _HOME_RESOURCES.items()},
+        "units": _roster_unit_totals(player_count, roster),
         "roster": roster,
         "armies": expected_army_count(player_count),
     }
@@ -110,13 +162,15 @@ def seed_holdings(
     names: list[str],
     roster: str = "default",
 ) -> dict[str, object]:
-    """Attach a home, a camp, and one army to players that already exist.
+    """Attach a home, a camp, and one army without the ledger. Development and test only.
 
     Registration creates the player rows. This does not create players and does
     not delete anything. It refuses when the database already has a city.
-    ``roster`` selects the opening stacks. Full mode uses ``coverage``.
+    ``roster`` selects the opening stacks. Production raises before the insert.
+    A ledger check on this world fails, because the city stocks have no ledger rows.
     """
 
+    _require_dev_seed("seed_holdings")
     if not names:
         raise ValueError("names must not be empty")
     if roster not in _ROSTERS:
@@ -137,8 +191,8 @@ def seed_holdings(
     return {
         "players": count,
         "profiles": [profile_for(index) for index in range(count)],
-        "resources": opening_resources(count),
-        "units": opening_units(count, roster=roster),
+        "resources": {name: amount * count * 2 for name, amount in _HOME_RESOURCES.items()},
+        "units": _roster_unit_totals(count, roster),
         "roster": roster,
         "armies": expected_army_count(count),
     }

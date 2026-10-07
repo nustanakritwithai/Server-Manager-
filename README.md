@@ -106,6 +106,7 @@ Useful admin and CLI entry points:
 | Logout / logout all | `POST /v1/auth/logout`, `POST /v1/auth/logout-all` | |
 | Change password | `POST /v1/auth/change-password` | |
 | Auth profile | `GET /v1/auth/me` | |
+| Claim start | `POST /v1/auth/claim-start` | |
 | Server time | `GET /v1/time` (bearer) | `simcore-cli clock now` |
 | Pending events | `GET /v1/admin/events?status=pending` | `simcore-cli events --status pending` |
 | Army positions and ETA | `GET /v1/admin/armies` | `simcore-cli armies` |

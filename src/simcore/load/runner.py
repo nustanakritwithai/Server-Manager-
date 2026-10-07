@@ -130,7 +130,7 @@ def _run_local(config: LoadConfig, *, started_at: str, started: float) -> dict[s
         base_url = processes.start_api()
         api = HttpApi(base_url, config.admin_token, recorder)
         players = _register(api, config.players, config.seed)
-        _attach_holdings([player.name for player in players])
+        _found_camps(api, players)
         ctx = RunContext(
             api=api,
             players=players,
@@ -141,6 +141,7 @@ def _run_local(config: LoadConfig, *, started_at: str, started: float) -> dict[s
             manage_processes=True,
         )
         refresh_views(ctx)
+        _note_starts(ctx)
         scripted_mix(ctx)
         sampler = _Sampler(ctx)
         sampler.start()
@@ -212,12 +213,12 @@ def _run_external(config: LoadConfig, *, started_at: str, started: float) -> dic
     sampler: _Sampler | None = None
     try:
         players = _register(api, config.players, config.seed)
+        _found_camps(api, players)
         if config.database_url:
             ensure_local_target(config.database_url)
             os.environ["SIMCORE_DATABASE_URL"] = config.database_url
             os.environ["SIMCORE_ENV"] = "development"
             _reload_settings()
-            _attach_holdings([player.name for player in players])
         ctx = RunContext(
             api=api,
             players=players,
@@ -227,13 +228,13 @@ def _run_external(config: LoadConfig, *, started_at: str, started: float) -> dic
             seed=config.seed,
             manage_processes=False,
         )
-        if config.database_url:
-            refresh_views(ctx)
-        else:
+        refresh_views(ctx)
+        _note_starts(ctx)
+        if not config.database_url:
             ctx.add(
                 "holdings",
                 "INCOMPLETE",
-                "external mode had no local test database, so cities were not seeded and invariant SQL was not run",
+                "external mode had no local test database, so invariant SQL was not run",
             )
         scripted_mix(ctx)
         sampler = _Sampler(ctx)
@@ -317,21 +318,63 @@ def _register(api: HttpApi, count: int, seed: int) -> list[PlayerSlot]:
     return slots
 
 
-def _attach_holdings(names: list[str]) -> None:
-    from simcore.clock import OffsetClock, SystemClock
-    from simcore.db import get_sessionmaker
-    from simcore.sim.seed_world import seed_holdings
+def _note_starts(ctx: RunContext) -> None:
+    missing = [player.name for player in ctx.players if not player.city_ids or not player.army_ids]
+    short = [player.name for player in ctx.players if len(player.city_ids) < 2]
+    if missing:
+        ctx.add("player_start", "FAIL", "registered without a city and an army: " + ", ".join(missing))
+    elif short:
+        ctx.add("player_start", "FAIL", "camp was not founded through the API: " + ", ".join(short))
+    else:
+        ctx.add(
+            "player_start",
+            "PASS",
+            f"{len(ctx.players)} players have a starting city, a camp, and an army from the API",
+        )
 
-    session = get_sessionmaker()()
-    try:
-        now = OffsetClock(session, SystemClock()).now()
-        seed_holdings(session, now, names, roster="default")
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
+
+def _found_camps(api: HttpApi, players: list[PlayerSlot]) -> None:
+    """Give each registered player a second city through the found-city command.
+
+    Registration already granted the home, the army, and the ledger stocks.
+    Transfers in the load mix need a second city. This does not insert rows.
+    """
+
+    from simcore.game.catalog import MAP_MAX, MAP_MIN
+
+    for player in players:
+        status, body = api.call(
+            "GET",
+            "/v1/me/cities",
+            phase="setup",
+            headers={"Authorization": f"Bearer {player.access_token}"},
+        )
+        if status != 200 or not isinstance(body, dict):
+            raise RuntimeError(f"cities for {player.name} returned HTTP {status}")
+        rows = list(body.get("cities") or [])
+        if len(rows) >= 2:
+            continue
+        if len(rows) != 1:
+            raise RuntimeError(f"{player.name} registered without a starting city")
+        home = rows[0]
+        x = int(home["x"])
+        y = int(home["y"]) + 2
+        if y > MAP_MAX:
+            y = int(home["y"]) - 2
+        if y < MAP_MIN:
+            raise RuntimeError(f"{player.name} has no in-bounds camp tile next to {x},{home['y']}")
+        founded = api.call(
+            "POST",
+            "/v1/commands/found-city",
+            phase="setup",
+            headers={
+                "Authorization": f"Bearer {player.access_token}",
+                "Idempotency-Key": f"start-camp-{player.player_id}",
+            },
+            json={"source_city_id": int(home["id"]), "x": x, "y": y, "name": f"{player.name} Camp"},
+        )
+        if founded[0] != 200:
+            raise RuntimeError(f"found camp for {player.name} returned HTTP {founded[0]}: {founded[1]}")
 
 
 def _refuse_existing_players() -> None:

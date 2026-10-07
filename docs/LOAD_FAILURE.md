@@ -1,6 +1,6 @@
 # Load and failure tests
 
-`python -m simcore.load` registers players through `POST /v1/auth/register`, attaches a home, a camp, and an army on a fresh local database, then sends mixed reads and commands. In local mode it also kills and restarts the processes it started and checks the world after each failure.
+`python -m simcore.load` registers players through `POST /v1/auth/register`. The server grants the home, the army, and the starting resources in that call. The tool then founds a camp with `POST /v1/commands/found-city` so transfers have a second city. It does not insert cities or armies. In local mode it also kills and restarts the processes it started and checks the world after each failure.
 
 Nothing in the report is guessed. A latency, a pool figure, or a lag that this run did not measure is `UNKNOWN` or `NOT INSTRUMENTED`.
 

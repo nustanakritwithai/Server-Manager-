@@ -48,6 +48,26 @@ The acting player on every player route comes from the access token. A `player_i
 
 รีเฟรชโทเคนถูกหมุนทุกครั้งที่ใช้ซ้ำ ถ้าเอาโทเคนเก่าที่ถูกหมุนไปแล้วมาใช้ เซสชันทั้งตระกูลถูกเพิกถอน ผู้เล่นที่กระทำคำสั่งมาจากโทเคนเท่านั้น ไม่ใช่จากบอดี้
 
+## Starting city / เมืองเริ่มต้น
+
+`POST /v1/auth/register` creates the account, one city, one garrisoned army, and the starting resources in a single transaction. If placement fails because the spawn window is full, the response is HTTP 409 `world_full` and the account is not created. The client does not send a coordinate.
+
+An account that already exists and has no city (registered before this, or inserted without one) calls `POST /v1/auth/claim-start` with the access token. It grants the same package once. A second call, including a call that overlaps the first, returns the existing home and does not add a city or an army. `created` is false on that call. A player who already has a city, including Alice and Bob from the seed, is treated as already started: claim returns that oldest city and does not add another. A temporary password must be changed before claim (`403 password_change_required`). Login does not grant a start. Putting the grant on login would have to surface `world_full` through the one `invalid_credentials` body, and login is already a concurrency boundary.
+
+`GET /v1/auth/me` includes `start_granted`, `home_city` (`id`, `name`, `x`, `y`), and `army_id`. The register response includes the same three fields. `home_city` is null only when `start_granted` is false.
+
+The tile is the first square in row-major order inside `SIMCORE_START_MAP_MIN`..`SIMCORE_START_MAP_MAX` (default -500..500, the map catalog) whose Chebyshev distance to every existing city is at least `SIMCORE_START_MIN_DISTANCE` (default 8). A city tile is occupied. A garrisoned army stands on its city, so it is included. Defaults for the stockpile are wood 2000, food 2000, iron 800, gold 400. Hourly rates default to 40/40/20/10. The army defaults to `militia:1`. Names default to `{name} Home` and `{name} Army`. Stocks are ledger rows with reason `start` and idempotency key `start:{player_id}:{resource}`. The grant is a traced command (`command_type` `start`) and an audit row `player.start`. There is no new migration and no snapshot schema change: the new rows are cities, armies, transactions, and player commands, which snapshots already store. Schema version stays 2.
+
+`GET /v1/admin/accounts` adds read-only `start_granted` and `home_city_id`. The admin page shows them. It cannot grant or remove a start.
+
+การสมัครสร้างเมือง กองทัพ และทรัพยากรในธุรกรรมเดียวกัน ถ้าแผนที่เต็มจะได้ 409 `world_full` และไม่มีบัญชี บัญชีเก่าที่ยังไม่มีเมืองเรียก `POST /v1/auth/claim-start` ได้ครั้งเดียว การเรียกซ้ำได้เมืองเดิม
+
+### Godot client change
+
+After register or login, read `GET /v1/auth/me`. If `start_granted` is false, `POST /v1/auth/claim-start` once and use that body. Do not send `x` or `y` for the first city. Train, build, and move with `home_city.id` and `army_id` (or `GET /v1/me/armies`). A 409 `world_full` on register means the account was not created; the player can retry later. A 409 `world_full` on claim leaves the account in place with `start_granted` still false.
+
+หลังล็อกอินให้อ่าน `GET /v1/auth/me` ถ้า `start_granted` เป็นเท็จ ให้เรียก `POST /v1/auth/claim-start` หนึ่งครั้ง อย่าส่งพิกัดเมืองแรก
+
 ## Godot client / ไคลเอนต์ Godot
 
 ```text
@@ -61,6 +81,9 @@ POST /v1/auth/refresh
 {"refresh_token":"<refresh_token>"}
 
 GET /v1/auth/me
+Authorization: Bearer <access_token>
+
+POST /v1/auth/claim-start
 Authorization: Bearer <access_token>
 
 POST /v1/auth/change-password
@@ -144,7 +167,7 @@ There is no account delete and no ledger edit on this API.
 
 ## Audit / บันทึก
 
-These actions go on the existing hash-chained `audit_log`: `auth.register`, `auth.login` (success and failure), `auth.lockout`, `auth.refresh_reuse`, `auth.logout_all`, `auth.password_change`, `auth.dev_login` when the route is disabled, and `account.temporary_password`, `account.lock`, `account.unlock`, `account.revoke_sessions`. Accepted commands still carry `trace_id`. The log never stores passwords, hashes, or tokens.
+These actions go on the existing hash-chained `audit_log`: `auth.register`, `auth.login` (success and failure), `auth.lockout`, `auth.refresh_reuse`, `auth.logout_all`, `auth.password_change`, `auth.dev_login` when the route is disabled, `player.start` when a home is granted (and `player.start` / `world_full` when the spawn window is full), and `account.temporary_password`, `account.lock`, `account.unlock`, `account.revoke_sessions`. Accepted commands, including the start grant, still carry `trace_id`. The log never stores passwords, hashes, or tokens.
 
 ## Migration and snapshots / ไมเกรชันและสแนปชอต
 

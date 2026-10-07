@@ -22,12 +22,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from simcore.admin_auth import LoginRateLimiter, client_address
-from simcore.api.deps import get_authenticated_player, get_clock, get_session
+from simcore.api.deps import get_authenticated_player, get_clock, get_current_player, get_session
 from simcore.clock import OffsetClock
 from simcore.audit import append_audit, write_audit
 from simcore.auth import DEV_AUTH_WARNING, issue_dev_token
 from simcore.config import Settings
 from simcore.errors import GameError
+from simcore.game.start import grant_start, start_public
 from simcore.models import Player, PlayerAccount, PlayerRefreshSession
 from simcore.player_auth import (
     IssuedTokens,
@@ -82,6 +83,53 @@ class DevLoginIn(BaseModel):
     name: str = Field(min_length=1, max_length=40)
 
 
+class HomeCityOut(BaseModel):
+    id: int
+    name: str
+    x: int
+    y: int
+
+
+class StartOut(BaseModel):
+    """Whether this account already has a server-placed home.
+
+    ``home_city`` is null until the start is granted. ``army_id`` is the army
+    that was created with that city, when one still exists.
+    """
+
+    start_granted: bool
+    home_city: HomeCityOut | None = None
+    army_id: int | None = None
+
+
+class AuthMeOut(StartOut):
+    account_id: int | None = None
+    username: str | None = None
+    email: str | None = None
+    player_id: int
+    player_name: str
+    must_change_password: bool
+    locked: bool
+    has_password: bool
+
+
+class RegisterOut(StartOut):
+    token_type: str
+    access_token: str
+    refresh_token: str
+    expires_in: int
+    refresh_expires_in: int
+    must_change_password: bool
+    player_id: int
+    player_name: str
+    username: str
+
+
+class ClaimStartOut(StartOut):
+    created: bool
+    trace_id: str | None = None
+
+
 def _settings(request: Request) -> Settings:
     return request.app.state.settings
 
@@ -122,7 +170,44 @@ def _rate_limited() -> JSONResponse:
     )
 
 
-@router.post("/register", response_model=None)
+def _grant_on_register(
+    session: Session,
+    request: Request,
+    player: Player,
+    now: datetime,
+    settings: Settings,
+) -> dict[str, object]:
+    """Place the start inside the register transaction. World-full rolls the account back."""
+
+    try:
+        grant_start(
+            session,
+            player,
+            now,
+            settings,
+            actor=f"player:{player.id}",
+            source_ip=client_address(request),
+        )
+    except GameError as exc:
+        if exc.code == "world_full":
+            write_audit(
+                actor="anonymous",
+                action="player.start",
+                target=f"username:{player.name.casefold()}",
+                source_ip=client_address(request),
+                result="failure",
+                reason="world_full",
+            )
+        raise
+    return start_public(session, player)
+
+
+@router.post(
+    "/register",
+    response_model=None,
+    responses={200: {"model": RegisterOut}},
+    summary="Create an account and its starting city, army, and resources",
+)
 def register(
     body: RegisterIn,
     request: Request,
@@ -202,6 +287,7 @@ def register(
         created_ip=client_address(request),
         user_agent=request.headers.get("user-agent"),
     )
+    start = _grant_on_register(session, request, player, now, settings)
     _audit(
         session,
         request,
@@ -210,7 +296,7 @@ def register(
         target=f"player:{player.id}",
         result="success",
     )
-    return token_response(settings, account, player, issued)
+    return {**token_response(settings, account, player, issued), **start}
 
 
 @router.post("/login", response_model=None)
@@ -438,12 +524,21 @@ def change_password(
     return token_response(settings, account, player, issued)
 
 
-@router.get("/me")
+@router.get("/me", response_model=AuthMeOut)
 def auth_me(
     player: Annotated[Player, Depends(get_authenticated_player)],
     session: Annotated[Session, Depends(get_session, scope="function")],
 ) -> dict[str, object]:
+    """Profile plus whether the server has already placed this player's home.
+
+    ``start_granted`` is false only when the player has no city. Seeded players
+    and anyone who already has a city report true. A new registration is true
+    immediately. An older account with no city stays false until
+    ``POST /v1/auth/claim-start``.
+    """
+
     account = account_for_player(session, player.id)
+    start = start_public(session, player)
     if account is None:
         return {
             "account_id": None,
@@ -454,6 +549,7 @@ def auth_me(
             "must_change_password": False,
             "locked": False,
             "has_password": False,
+            **start,
         }
     return {
         "account_id": account.id,
@@ -464,6 +560,57 @@ def auth_me(
         "must_change_password": bool(account.must_change_password),
         "locked": bool(account.locked),
         "has_password": True,
+        **start,
+    }
+
+
+@router.post(
+    "/claim-start",
+    response_model=ClaimStartOut,
+    summary="Grant the starting city once, or return the home that already exists",
+)
+def claim_start(
+    request: Request,
+    player: Annotated[Player, Depends(get_current_player)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
+    clock: Annotated[OffsetClock, Depends(get_clock)],
+) -> dict[str, object]:
+    """Idempotent start for an account that was created before starts existed.
+
+    New registrations already have a home, so this returns that home and does
+    not create a second city. A player with no city gets one. Two overlapping
+    calls lock the player row and the spawn lock; only one city is inserted.
+    A temporary password must be changed first (``get_current_player``).
+    Login does not grant a start: a world-full failure would have to break the
+    single ``invalid_credentials`` response, and login is already a race surface.
+    """
+
+    settings = _settings(request)
+    try:
+        granted = grant_start(
+            session,
+            player,
+            clock.now(),
+            settings,
+            actor=f"player:{player.id}",
+            source_ip=client_address(request),
+        )
+    except GameError as exc:
+        if exc.code == "world_full":
+            write_audit(
+                actor=f"player:{player.id}",
+                action="player.start",
+                target=f"player:{player.id}",
+                source_ip=client_address(request),
+                result="failure",
+                reason="world_full",
+            )
+        raise
+    body = start_public(session, player)
+    return {
+        "created": granted.created,
+        "trace_id": granted.trace_id,
+        **body,
     }
 
 

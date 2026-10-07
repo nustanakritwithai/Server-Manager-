@@ -10,6 +10,10 @@ The simulation clock is wall time plus `world_state.offset_seconds`. `world_vers
 
 The client should call `GET /v1/time`, compute `offset = server_time - local_now`, and count down with `arrive_at - (local_now + offset)`. The countdown is cosmetic. The battle, the loot, and the march home exist only after the worker has processed the matching event.
 
+## New player
+
+`POST /v1/auth/register` places one city, one garrisoned army, and the starting stockpile in the same transaction as the account. The client does not choose the tile. An account that already exists and has no city gets the same package from `POST /v1/auth/claim-start`, once. Amounts, the army, the minimum distance, and the spawn window are settings (`SIMCORE_START_*`), documented in `.env.example`. Stocks go through the ledger with reason `start`. See `docs/PLAYER_AUTH.md`.
+
 ## Cities
 
 A city has an owner, a name, a position `(x, y)`, four resource stockpiles, an hourly production rate for each, a building map, and `last_updated`.

@@ -179,9 +179,6 @@ def run(config: SimConfig) -> dict[str, Any]:
         api = ApiClient(base_url, admin_token=config.admin_token)
         _wait_ready(api)
         bots = _login_bots(api, config)
-        if config.mode in _LOCAL_MODES:
-            roster = "coverage" if config.mode == "full" else "default"
-            _attach_holdings(frozen, [str(bot["name"]) for bot in bots], roster=roster)
         rng = random.Random(config.seed)
         sequence: list[dict[str, Any]] = []
         max_lag = 0.0
@@ -673,23 +670,6 @@ def _claim_staging_bots(api: ApiClient, config: SimConfig) -> list[dict[str, Any
         refreshed = refresh_bot(api, str(changed["refresh_token"]))
         bots.append(bot_record(refreshed, name=name, index=index))
     return bots
-
-
-def _attach_holdings(frozen: Any, names: list[str], roster: str = "default") -> None:
-    from simcore.clock import OffsetClock
-    from simcore.db import get_sessionmaker
-    from simcore.sim.seed_world import seed_holdings
-
-    session = get_sessionmaker()()
-    try:
-        now = OffsetClock(session, frozen).now()
-        seed_holdings(session, now, names, roster=roster)
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
 
 
 def _view(api: ApiClient, bot: dict[str, Any]) -> dict[str, Any]:

@@ -115,6 +115,47 @@ def test_production_rejects_a_short_player_token_secret(monkeypatch: pytest.Monk
         get_settings.cache_clear()
 
 
+def test_direct_seed_helpers_refuse_outside_dev_and_test(monkeypatch: pytest.MonkeyPatch) -> None:
+    from datetime import datetime, timezone
+
+    from simcore.sim.seed_world import seed_bots, seed_holdings
+
+    monkeypatch.setenv("SIMCORE_ENV", "production")
+    monkeypatch.setenv("SIMCORE_ADMIN_TOKEN", "generated-token-not-a-default")
+    monkeypatch.setenv("SIMCORE_PLAYER_TOKEN_SECRET", "p" * 48)
+    get_settings.cache_clear()
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    try:
+        with pytest.raises(RuntimeError, match="without the ledger"):
+            seed_bots(None, now, 1)  # type: ignore[arg-type]
+        with pytest.raises(RuntimeError, match="without the ledger"):
+            seed_holdings(None, now, ["Ada"])  # type: ignore[arg-type]
+    finally:
+        get_settings.cache_clear()
+
+
+def test_start_settings_reject_a_bad_army_and_a_map_outside_the_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    get_settings.cache_clear()
+    try:
+        settings = Settings(_env_file=None)
+        assert settings.start_wood == 2000
+        assert settings.start_units == "militia:1"
+        assert settings.start_min_distance == 8
+        monkeypatch.setenv("SIMCORE_START_UNITS", "dragon:1")
+        with pytest.raises(ValidationError, match="SIMCORE_START_UNITS"):
+            Settings(_env_file=None)
+        monkeypatch.setenv("SIMCORE_START_UNITS", "militia:1")
+        monkeypatch.setenv("SIMCORE_START_MAP_MAX", "501")
+        with pytest.raises(ValidationError, match="SIMCORE_START_MAP_MAX"):
+            Settings(_env_file=None)
+        monkeypatch.setenv("SIMCORE_START_MAP_MAX", "500")
+        monkeypatch.setenv("SIMCORE_START_MIN_DISTANCE", "0")
+        with pytest.raises(ValidationError, match="SIMCORE_START_MIN_DISTANCE"):
+            Settings(_env_file=None)
+    finally:
+        get_settings.cache_clear()
+
+
 def test_development_still_allows_the_local_admin_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SIMCORE_ENV", "development")
     monkeypatch.delenv("SIMCORE_ADMIN_TOKEN", raising=False)

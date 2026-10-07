@@ -144,6 +144,28 @@ class Settings(BaseSettings):
     backup_status_path: str = ""
     backup_warn_hours: float = 26
     backup_critical_hours: float = 50
+    # New-player start. The server picks the tile. The client does not.
+    # Amounts are granted through the resource ledger (reason "start").
+    # Rates match a founded city (FOUND_CITY_RATES). One militia can march,
+    # and gold stays below the cost of 100 cavalry so that rejection still holds.
+    start_wood: int = 2000
+    start_food: int = 2000
+    start_iron: int = 800
+    start_gold: int = 400
+    start_wood_rate: int = 40
+    start_food_rate: int = 40
+    start_iron_rate: int = 20
+    start_gold_rate: int = 10
+    # Comma-separated type:count. At least one stack. Types must be in the catalog.
+    start_units: str = "militia:1"
+    # "{name}" is replaced with the player name. The result is clipped to 40 characters.
+    start_city_name: str = "{name} Home"
+    start_army_name: str = "{name} Army"
+    # Chebyshev distance (king-move) from every existing city. 1 forbids only the same tile.
+    start_min_distance: int = 8
+    # Inclusive spawn window. Must sit inside the map catalog (-500..500).
+    start_map_min: int = -500
+    start_map_max: int = 500
 
     @field_validator("database_url", mode="before")
     @classmethod
@@ -193,7 +215,39 @@ class Settings(BaseSettings):
         if self.command_rate_limit < 1 or self.command_rate_window_seconds < 1:
             raise ValueError("SIMCORE_COMMAND_RATE_LIMIT and SIMCORE_COMMAND_RATE_WINDOW_SECONDS must be at least 1")
         self._check_monitor()
+        self._check_start()
         return self
+
+    def _check_start(self) -> None:
+        from simcore.game.catalog import MAP_MAX, MAP_MIN
+        from simcore.game.start import parse_start_units
+
+        for name, amount in (
+            ("SIMCORE_START_WOOD", self.start_wood),
+            ("SIMCORE_START_FOOD", self.start_food),
+            ("SIMCORE_START_IRON", self.start_iron),
+            ("SIMCORE_START_GOLD", self.start_gold),
+            ("SIMCORE_START_WOOD_RATE", self.start_wood_rate),
+            ("SIMCORE_START_FOOD_RATE", self.start_food_rate),
+            ("SIMCORE_START_IRON_RATE", self.start_iron_rate),
+            ("SIMCORE_START_GOLD_RATE", self.start_gold_rate),
+        ):
+            if isinstance(amount, bool) or not isinstance(amount, int) or amount < 0:
+                raise ValueError(f"{name} must be zero or greater")
+        if self.start_min_distance < 1:
+            raise ValueError("SIMCORE_START_MIN_DISTANCE must be at least 1")
+        if self.start_map_min > self.start_map_max:
+            raise ValueError("SIMCORE_START_MAP_MIN must be less than or equal to SIMCORE_START_MAP_MAX")
+        if self.start_map_min < MAP_MIN or self.start_map_max > MAP_MAX:
+            raise ValueError(f"SIMCORE_START_MAP_MIN and SIMCORE_START_MAP_MAX must sit inside {MAP_MIN}..{MAP_MAX}")
+        self.start_units = self.start_units.strip()
+        parse_start_units(self.start_units)
+        self.start_city_name = self.start_city_name.strip()
+        self.start_army_name = self.start_army_name.strip()
+        if not self.start_city_name or not self.start_army_name:
+            raise ValueError("SIMCORE_START_CITY_NAME and SIMCORE_START_ARMY_NAME must not be empty")
+        if len(self.start_city_name) > 80 or len(self.start_army_name) > 80:
+            raise ValueError("SIMCORE_START_CITY_NAME and SIMCORE_START_ARMY_NAME must be at most 80 characters")
 
     @property
     def dev_login_enabled(self) -> bool:

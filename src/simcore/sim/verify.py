@@ -32,6 +32,7 @@ _ALLOWED_REASONS = frozenset(
         Reason.FOUND_CITY,
         Reason.TRANSFER_OUT,
         Reason.TRANSFER_IN,
+        Reason.START,
     }
 )
 _SEEDED_MODES = frozenset({"ci", "full"})
@@ -416,6 +417,8 @@ def _ledger(session: Session, *, player_count: int | None) -> list[dict[str, Any
             )
         if row.reason == Reason.PRODUCTION and row.delta < 0:
             problems.append(_fail("ledger_conservation", f"production delta {row.delta}", trace_id=row.trace_id))
+        if row.reason == Reason.START and row.delta < 0:
+            problems.append(_fail("ledger_conservation", f"start delta {row.delta}", trace_id=row.trace_id))
         if row.reason == Reason.UPKEEP and row.delta > 0:
             problems.append(_fail("ledger_conservation", f"upkeep delta {row.delta}", trace_id=row.trace_id))
         if row.reason in {Reason.TRAIN, Reason.FOUND_CITY, Reason.TRANSFER_OUT} and row.delta > 0:
