@@ -72,7 +72,7 @@ Same admin token as the rest of `/v1/admin` (`X-Admin-Token`). No auth change.
 | Create | `POST /v1/admin/snapshots` with `{"reason": "MANUAL"}`. Omit `reason` for `MANUAL`. |
 | List | `GET /v1/admin/snapshots` |
 | One snapshot | `GET /v1/admin/snapshots/{id}` — metadata and the counts stored at capture |
-| Inspect | `GET /v1/admin/snapshots/{id}/inspect` — recomputed counts, payload checksum, `checksum_ok` |
+| Inspect | `GET /v1/admin/snapshots/{id}/inspect` — recomputed counts, payload checksum, `checksum_ok`, `summary_ok`. Counts are the lists that snapshot's `schema_version` captured. A version 1 snapshot has no `player_commands` count. Restore still refuses a `schema_version` this server does not write. |
 | Restore | `POST /v1/admin/snapshots/{id}/restore` with `{"confirm": true}` |
 
 Player routes are unchanged. While restore is in progress, player commands return `503` `maintenance`, the worker will not claim events, and the admin clock will not advance.
