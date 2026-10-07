@@ -184,6 +184,25 @@ $srv = $root -replace '\\', '/'
 Set-Content -LiteralPath $ssl -Value "Listen 443" -Encoding utf8
 Set-Content -LiteralPath $vhost -Value "Listen 9" -Encoding utf8
 Set-Content -LiteralPath $enabled -Value "Listen 8080" -Encoding utf8
+Assert-True "httpd exit 0 is syntax ok" (Test-ApacheConfigOk -ExitCode 0 -Output "")
+Assert-True "stderr Syntax OK is success" (Test-ApacheConfigOk -ExitCode 1 -Output "Syntax OK")
+Assert-True "null exit with Syntax OK is success" (Test-ApacheConfigOk -ExitCode $null -Output "Syntax OK")
+Assert-True "httpd syntax error fails" (-not (Test-ApacheConfigOk -ExitCode 1 -Output "Syntax error on line 12 of httpd.conf"))
+$syntaxDir = Join-Path ([System.IO.Path]::GetTempPath()) ("simcore-httpd-ok-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $syntaxDir | Out-Null
+if ($env:OS -eq "Windows_NT") {
+    $syntaxFake = Join-Path $syntaxDir "httpd.cmd"
+    [System.IO.File]::WriteAllText($syntaxFake, "@echo off`r`necho Syntax OK 1>&2`r`nexit /b 0`r`n")
+} else {
+    $syntaxFake = Join-Path $syntaxDir "httpd"
+    [System.IO.File]::WriteAllText($syntaxFake, "#!/bin/sh`necho Syntax OK >&2`nexit 0`n")
+    & chmod +x $syntaxFake
+}
+$syntaxResult = Invoke-SimcoreNative -FilePath $syntaxFake -ArgumentList @("-t", "-d", "C:\xampp\apache")
+Assert-True "stderr Syntax OK is captured" ($syntaxResult.Output.Contains("Syntax OK"))
+Assert-True "captured Syntax OK passes" (Test-ApacheConfigOk -ExitCode $syntaxResult.ExitCode -Output $syntaxResult.Output)
+Remove-Item -LiteralPath $syntaxDir -Recurse -Force
+
 Assert-True "backslash apache root is not absolute" (-not (Test-ApacheAbsolutePath '\apache'))
 Assert-True "slash apache root is not absolute" (-not (Test-ApacheAbsolutePath '/apache'))
 Assert-True "slash apache child is not absolute" (-not (Test-ApacheAbsolutePath '/apache/conf/httpd.conf'))
