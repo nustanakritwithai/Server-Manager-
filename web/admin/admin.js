@@ -1,5 +1,6 @@
 (() => {
   const STORAGE_URL = "simcore.apiBaseUrl";
+  const STORAGE_TOKEN = "simcore.adminToken";
   const REQUEST_MS = 25000;
 
   const state = {
@@ -20,6 +21,24 @@
 
   function savedUrl() {
     return (localStorage.getItem(STORAGE_URL) || "").replace(/\/+$/, "");
+  }
+
+  function savedToken() {
+    try {
+      return localStorage.getItem(STORAGE_TOKEN) || "";
+    } catch {
+      return "";
+    }
+  }
+
+  function persistToken(token) {
+    try {
+      if (token) localStorage.setItem(STORAGE_TOKEN, token);
+      else localStorage.removeItem(STORAGE_TOKEN);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   function h(tag, props) {
@@ -801,7 +820,16 @@
     if (typed) state.token = typed;
     $("admin-token").value = "";
     if (state.apiBaseUrl) localStorage.setItem(STORAGE_URL, state.apiBaseUrl);
-    setSessionStatus(state.token ? "Token is held in memory for this page." : "API URL saved. Token is not loaded.", state.token ? "ok" : "");
+    const remember = $("remember-token").checked;
+    const tokenStored = persistToken(remember ? state.token : "");
+    const sessionMessage = !state.token
+      ? "API URL saved. Token is not loaded."
+      : remember
+        ? tokenStored
+          ? "Token saved on this device."
+          : "Token is active for this page, but browser storage is unavailable."
+        : "Token is active for this page only.";
+    setSessionStatus(sessionMessage, state.token ? "ok" : "");
     route();
   }
 
@@ -809,7 +837,12 @@
   $("lock-btn").addEventListener("click", () => {
     state.token = "";
     $("admin-token").value = "";
-    setSessionStatus("Token cleared from memory.", "");
+    $("remember-token").checked = false;
+    const tokenRemoved = persistToken("");
+    setSessionStatus(
+      tokenRemoved ? "Token cleared from this page and browser profile." : "Token cleared from this page, but browser storage could not be cleared.",
+      "",
+    );
     route();
   });
   $("api-reset").addEventListener("click", () => {
@@ -882,7 +915,12 @@
 
   window.addEventListener("hashchange", () => route());
   state.apiBaseUrl = savedUrl() || defaultApi();
+  state.token = savedToken();
   $("api-url").value = state.apiBaseUrl;
-  setSessionStatus("Token is not loaded.", "");
+  $("remember-token").checked = Boolean(state.token);
+  setSessionStatus(
+    state.token ? "Saved token loaded from this device." : "Token is not loaded.",
+    state.token ? "ok" : "",
+  );
   route();
 })();

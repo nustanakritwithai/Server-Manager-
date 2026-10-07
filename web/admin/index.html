@@ -27,7 +27,8 @@
             <input id="admin-token" type="password" autocomplete="off" spellcheck="false" />
           </label>
         </div>
-        <p class="muted">The token stays in this page’s memory. Refresh clears it. This page does not write it to browser storage. The API still checks the header.</p>
+        <label class="check"><input id="remember-token" type="checkbox" /><span>Remember token on this device</span></label>
+        <p class="muted">When selected, the token is saved in this browser profile and loaded automatically. Code running on this page’s origin may access it. Use Clear token to remove it. The API still checks the header.</p>
         <div class="row">
           <button type="submit">Connect</button>
           <button type="button" id="lock-btn" class="ghost">Clear token</button>

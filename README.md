@@ -157,7 +157,7 @@ python3 -m http.server 8080
 
 Open http://127.0.0.1:8080 and point the API field at http://127.0.0.1:8741. Development CORS allows that origin plus `https://nustanakritwithai.github.io`.
 
-The Admin Control Center is a separate page at http://127.0.0.1:8080/admin/ (on GitHub Pages: `…/Server-Manager-/admin/`). It reads the same `web/config.js` API URL as the game client. The operator types `X-Admin-Token` into the page; the script keeps that token in memory for the tab and does not write it to `localStorage` or `sessionStorage`. Refreshing the page clears it. The page calls the admin API and shows the response. Snapshot restore is select, inspect, warning, typed snapshot id, then `POST` with `confirm: true`. World mutation stays on the server.
+The Admin Control Center is a separate page at http://127.0.0.1:8080/admin/ (on GitHub Pages: `…/Server-Manager-/admin/`). It reads the same `web/config.js` API URL as the game client. The operator types `X-Admin-Token` into the page. By default it stays in memory for that tab. Selecting **Remember token on this device** saves it in this browser profile’s `localStorage` and loads it automatically on later visits. Use **Clear token** to remove it. The page calls the admin API and shows the response. Snapshot restore is select, inspect, warning, typed snapshot id, then `POST` with `confirm: true`. World mutation stays on the server.
 
 ## Deploy on the Windows VPS
 
