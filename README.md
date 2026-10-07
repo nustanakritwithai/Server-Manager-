@@ -32,7 +32,7 @@ The client counts down from `arrive_at` itself. Real casualties and loot appear 
 
 Combat is a pure function, `resolve_battle(attacker, defender, seed)`, with its own LCG so a report can be replayed. Resource changes go through the `transactions` ledger. Retrying an event cannot grant loot twice.
 
-Dev login is a **placeholder**. `POST /v1/auth/dev-login` returns `dev:{player_id}`. It is not signed. The web client in `web/` uses it so people can play the seeded world (Alice / Oakhold, Bob / Ironford). Anyone who can reach the API can act as those players. On the VPS the API process listens on localhost only; Caddy is what publishes HTTPS. This is not an account system.
+Players sign in with a username or email and a password. The API returns a short-lived bearer access token and a long-lived refresh token. Cookies are not required. `POST /v1/auth/dev-login` still exists for local development and tests: it returns the unsigned `dev:{player_id}` token. Production leaves that route off unless `SIMCORE_ENABLE_DEV_LOGIN=true`. Seeded players such as Alice and Bob keep their cities and armies, and they have no password until an admin sets a temporary one. Details, including the Godot client calls, are in [docs/PLAYER_AUTH.md](docs/PLAYER_AUTH.md).
 
 ## Run locally (Docker)
 
@@ -49,14 +49,21 @@ That starts Postgres, runs migrations, seeds Alice and Bob, serves the API on po
 Alice's Oakhold is at (10, 10). Bob's Ironford is at (40, 50). The distance is 50 tiles and Alice's army moves at 6 tiles/hour, so an attack takes 30000 seconds (8h 20m).
 
 ```bash
-# Placeholder login. The warning in the body is intentional.
+# Local docker only. Production returns 404 for this route.
 curl -s -X POST http://127.0.0.1:8741/v1/auth/dev-login \
   -H 'content-type: application/json' -d '{"name":"Alice"}'
 
+# Real account. The access token is what later calls send as Authorization: Bearer.
+curl -s -X POST http://127.0.0.1:8741/v1/auth/register \
+  -H 'content-type: application/json' \
+  -d '{"username":"ada","password":"correct-horse-battery"}'
+
 # Send Oak Company (army 1) to Ironford (city 2). The response includes depart_at and arrive_at.
+# Idempotency-Key is optional. The same key and body return the first result and do not march twice.
 curl -s -X POST http://127.0.0.1:8741/v1/commands/attack \
   -H 'content-type: application/json' \
   -H 'authorization: Bearer dev:1' \
+  -H 'Idempotency-Key: demo-attack-1' \
   -d '{"army_id":1,"target_city_id":2}'
 
 # Fast-forward simulated time and let the worker catch up.
@@ -77,7 +84,13 @@ Useful admin and CLI entry points:
 
 | Action | HTTP | CLI |
 | --- | --- | --- |
-| Server time | `GET /v1/time` | `simcore-cli clock now` |
+| Register | `POST /v1/auth/register` | |
+| Login | `POST /v1/auth/login` | |
+| Refresh | `POST /v1/auth/refresh` | |
+| Logout / logout all | `POST /v1/auth/logout`, `POST /v1/auth/logout-all` | |
+| Change password | `POST /v1/auth/change-password` | |
+| Auth profile | `GET /v1/auth/me` | |
+| Server time | `GET /v1/time` (bearer) | `simcore-cli clock now` |
 | Pending events | `GET /v1/admin/events?status=pending` | `simcore-cli events --status pending` |
 | Army positions and ETA | `GET /v1/admin/armies` | `simcore-cli armies` |
 | Advance the clock | `POST /v1/admin/clock/advance` | `simcore-cli clock advance --hours 1` |
@@ -96,6 +109,10 @@ Useful admin and CLI entry points:
 | World map | `GET /v1/admin/world-map` | |
 | Monitoring | `GET /v1/admin/monitoring` | |
 | Monitoring history | `GET /v1/admin/monitoring/history?metric=&window=` | |
+| Accounts | `GET /v1/admin/accounts?q=` | |
+| Account sessions | `GET /v1/admin/accounts/{id}/sessions` | |
+| Temporary password | `POST /v1/admin/accounts/temporary-password` | |
+| Lock / unlock / revoke sessions | `POST /v1/admin/accounts/{id}/lock`, `/unlock`, `/revoke-sessions` | |
 
 Admin routes are on unless `SIMCORE_ENV=production`. In production set `SIMCORE_ENABLE_ADMIN=1` to turn them back on.
 
@@ -175,7 +192,7 @@ source .venv/bin/activate
 python -m simcore.worker
 ```
 
-`SIMCORE_EMBEDDED_WORKER=true` runs that same loop inside the API process instead. Leave it false for normal use, including the VPS, where `simcore-worker` is its own Windows service. Production (`SIMCORE_ENV=production`) refuses to start if `SIMCORE_ADMIN_TOKEN` is empty or still `dev-admin`. Local docker-compose keeps `dev-admin`.
+`SIMCORE_EMBEDDED_WORKER=true` runs that same loop inside the API process instead. Leave it false for normal use, including the VPS, where `simcore-worker` is its own Windows service. Production (`SIMCORE_ENV=production`) refuses to start if `SIMCORE_ADMIN_TOKEN` is empty or still `dev-admin`, and if `SIMCORE_PLAYER_TOKEN_SECRET` is missing, shorter than 32 characters, or one of the known weak values (including the development default). Local docker-compose keeps `dev-admin` and the development player-token default. `deploy/windows/update.ps1` writes a random player-token secret into `.env.prod` when that value is missing or weak, and it does not print the secret.
 
 To click through the vertical slice against a local API:
 

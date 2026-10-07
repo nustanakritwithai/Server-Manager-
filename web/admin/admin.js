@@ -1264,7 +1264,7 @@
     if (head === "trace") {
       return { view: "trace", tab: null, entity: parts[1] || null, id: parts.slice(2).join("/") || null };
     }
-    const views = { dashboard: true, snapshots: true, events: true, battles: true, ledger: true, actions: true, trace: true, audit: true, map: true, monitoring: true };
+    const views = { dashboard: true, snapshots: true, events: true, battles: true, ledger: true, actions: true, trace: true, audit: true, accounts: true, map: true, monitoring: true };
     if (views[head]) return { view: head, tab: null, entity: null, id: tail };
     return { view: "dashboard", tab: null, entity: null, id: null };
   }
@@ -1305,6 +1305,7 @@
       else if (parsed.view === "ledger") await loadLedger();
       else if (parsed.view === "trace") await loadTrace(parsed);
       else if (parsed.view === "audit") await loadAudit();
+      else if (parsed.view === "accounts") await loadAccounts();
       else if (parsed.view === "monitoring") {
         await loadMonitoring();
         if (gen === generation) startMonitorRefresh();
@@ -1457,6 +1458,137 @@
     else if (commandId) next = "trace/command/" + commandId;
     if (location.hash === "#" + next) loadTrace(parseHash()).catch(showError);
     else location.hash = next;
+  });
+  async function loadAccounts() {
+    const q = $("account-query").value.trim();
+    const body = await request("/v1/admin/accounts" + query({ q: q, limit: 100 }));
+    renderTable(
+      $("account-table"),
+      [
+        { label: "Account", cell: (row) => blank(row.account_id) },
+        { label: "Player", cell: (row) => idLink("player", row.player_id, row.player_name || row.player_id) },
+        { label: "Username", cell: (row) => blank(row.username) },
+        { label: "Email", cell: (row) => blank(row.email) },
+        { label: "Password", cell: (row) => (row.has_password ? "set" : "none") },
+        { label: "Locked", cell: (row) => (row.locked ? badge("locked") : "no") },
+        { label: "Must change", cell: (row) => (row.must_change_password ? "yes" : "no") },
+        { label: "Sessions", cell: (row) => row.session_count },
+        {
+          label: "Actions",
+          cell: (row) => accountActions(row),
+        },
+      ],
+      body.accounts || [],
+      "No accounts."
+    );
+  }
+
+  function accountActions(row) {
+    const wrap = h("div", { class: "row" });
+    if (row.player_id != null) {
+      wrap.append(h("button", {
+        type: "button",
+        class: "ghost",
+        text: "Use id",
+        "data-account-player": String(row.player_id),
+      }));
+    }
+    if (row.account_id == null) return wrap;
+    wrap.append(h("button", {
+      type: "button",
+      class: "ghost",
+      text: "Sessions",
+      "data-account-sessions": String(row.account_id),
+    }));
+    wrap.append(h("button", {
+      type: "button",
+      class: "ghost",
+      text: row.locked ? "Unlock" : "Lock",
+      "data-account-lock": String(row.account_id),
+      "data-locked": row.locked ? "1" : "0",
+    }));
+    wrap.append(h("button", {
+      type: "button",
+      class: "ghost",
+      text: "Revoke sessions",
+      "data-account-revoke": String(row.account_id),
+    }));
+    return wrap;
+  }
+
+  async function showAccountSessions(accountId) {
+    const body = await request("/v1/admin/accounts/" + accountId + "/sessions");
+    renderTable(
+      $("account-sessions"),
+      [
+        { label: "Id", cell: (row) => row.id },
+        { label: "Family", cell: (row) => row.family_id },
+        { label: "Created", cell: (row) => row.created_at },
+        { label: "Expires", cell: (row) => row.expires_at },
+        { label: "Revoked", cell: (row) => blank(row.revoked_at) },
+        { label: "Last used", cell: (row) => blank(row.last_used_at) },
+        { label: "IP", cell: (row) => blank(row.created_ip) },
+        { label: "Rotated", cell: (row) => (row.rotated ? "yes" : "no") },
+      ],
+      body.sessions || [],
+      "No sessions."
+    );
+  }
+
+  $("account-search").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (location.hash !== "#accounts") location.hash = "accounts";
+    else loadAccounts().catch(showError);
+  });
+  $("account-table").addEventListener("click", (event) => {
+    const button = event.target.closest("button");
+    if (!button) return;
+    const playerId = button.getAttribute("data-account-player");
+    const sessions = button.getAttribute("data-account-sessions");
+    const lockId = button.getAttribute("data-account-lock");
+    const revokeId = button.getAttribute("data-account-revoke");
+    if (playerId) {
+      $("temp-player-id").value = playerId;
+      return;
+    }
+    if (sessions) {
+      showAccountSessions(sessions).catch(showError);
+      return;
+    }
+    if (lockId) {
+      const locked = button.getAttribute("data-locked") === "1";
+      const path = "/v1/admin/accounts/" + lockId + (locked ? "/unlock" : "/lock");
+      request(path, { method: "POST" })
+        .then(() => loadAccounts())
+        .catch(showError);
+      return;
+    }
+    if (revokeId) {
+      request("/v1/admin/accounts/" + revokeId + "/revoke-sessions", { method: "POST" })
+        .then((body) => {
+          $("account-note").textContent = "Revoked " + (body && body.revoked_sessions != null ? body.revoked_sessions : 0) + " sessions.";
+          return loadAccounts();
+        })
+        .catch(showError);
+    }
+  });
+  $("temp-password-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const playerId = Number($("temp-player-id").value);
+    const password = $("temp-password").value;
+    $("temp-password").value = "";
+    request("/v1/admin/accounts/temporary-password", {
+      method: "POST",
+      json: { player_id: playerId, password: password },
+    })
+      .then((body) => {
+        $("account-note").textContent =
+          "Temporary password set for player " +
+          (body && body.player_id != null ? body.player_id : playerId) +
+          ". It was not displayed. The player must change it at the next login.";
+        return loadAccounts();
+      })
+      .catch(showError);
   });
   $("audit-filter").addEventListener("submit", (event) => {
     event.preventDefault();

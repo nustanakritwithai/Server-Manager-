@@ -1,6 +1,7 @@
 (() => {
   const STORAGE_URL = "simcore.apiBaseUrl";
   const STORAGE_TOKEN = "simcore.token";
+  const STORAGE_REFRESH = "simcore.refreshToken";
   const STORAGE_NAME = "simcore.playerName";
   const REQUEST_MS = 25000;
   const POLL_MS = 4000;
@@ -14,6 +15,7 @@
   const state = {
     apiBaseUrl: "",
     token: sessionStorage.getItem(STORAGE_TOKEN) || "",
+    refreshToken: sessionStorage.getItem(STORAGE_REFRESH) || "",
     playerName: sessionStorage.getItem(STORAGE_NAME) || "",
     offsetMs: 0,
     serverTime: "",
@@ -491,6 +493,28 @@
     $("who-name").textContent = on ? state.playerName : "ยังไม่ได้เข้าสู่ระบบ";
   }
 
+  function idempotencyKey() {
+    if (window.crypto && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+    return "web-" + Date.now().toString(16) + "-" + Math.random().toString(16).slice(2);
+  }
+
+  function applySession(body) {
+    state.token = body.access_token || body.token || "";
+    state.refreshToken = body.refresh_token || "";
+    state.playerName = body.player_name || state.playerName;
+    if (state.token) sessionStorage.setItem(STORAGE_TOKEN, state.token);
+    else sessionStorage.removeItem(STORAGE_TOKEN);
+    if (state.refreshToken) sessionStorage.setItem(STORAGE_REFRESH, state.refreshToken);
+    else sessionStorage.removeItem(STORAGE_REFRESH);
+    if (state.playerName) sessionStorage.setItem(STORAGE_NAME, state.playerName);
+  }
+
+  function showChangePassword(on) {
+    $("change-password-form").hidden = !on;
+    $("login-form").hidden = on;
+    $("register-form").hidden = on;
+  }
+
   async function refreshAll() {
     const [timeBody, me, cities, map, armies, reports] = await Promise.all([
       api("/v1/time"),
@@ -514,24 +538,75 @@
     renderGame();
   }
 
-  async function login(name) {
-    $("login-note").textContent = "";
-    const body = await api("/v1/auth/dev-login", { method: "POST", auth: false, json: { name } });
-    state.token = body.token;
-    state.playerName = body.player_name;
-    sessionStorage.setItem(STORAGE_TOKEN, state.token);
-    sessionStorage.setItem(STORAGE_NAME, state.playerName);
+  async function enterGame(body) {
+    applySession(body);
+    if (body.must_change_password) {
+      showChangePassword(true);
+      showGame(false);
+      $("login-note").textContent = "ต้องเปลี่ยนรหัสผ่านก่อนเล่น";
+      return;
+    }
+    showChangePassword(false);
     $("login-note").textContent = body.warning || "";
     await refreshAll();
     startPoll();
   }
 
-  function logout() {
+  async function loginAccount(username, password) {
+    $("login-note").textContent = "";
+    const body = await api("/v1/auth/login", {
+      method: "POST",
+      auth: false,
+      json: { username: username, password: password },
+    });
+    $("login-password").value = "";
+    await enterGame(body);
+  }
+
+  async function registerAccount(username, email, password) {
+    $("login-note").textContent = "";
+    const payload = { username: username, password: password };
+    if (email) payload.email = email;
+    const body = await api("/v1/auth/register", { method: "POST", auth: false, json: payload });
+    $("register-password").value = "";
+    await enterGame(body);
+  }
+
+  async function submitPasswordChange(currentPassword, newPassword) {
+    const body = await api("/v1/auth/change-password", {
+      method: "POST",
+      json: { current_password: currentPassword, new_password: newPassword },
+    });
+    $("current-password").value = "";
+    $("new-password").value = "";
+    await enterGame(body);
+  }
+
+  async function login(name) {
+    $("login-note").textContent = "";
+    const body = await api("/v1/auth/dev-login", { method: "POST", auth: false, json: { name } });
+    state.refreshToken = "";
+    sessionStorage.removeItem(STORAGE_REFRESH);
+    await enterGame(body);
+  }
+
+  async function logout() {
+    const token = state.token;
+    try {
+      if (token && state.apiBaseUrl) {
+        await api("/v1/auth/logout", { method: "POST" });
+      }
+    } catch {
+      // Clearing the local session is still the right outcome.
+    }
     state.token = "";
+    state.refreshToken = "";
     state.playerName = "";
     sessionStorage.removeItem(STORAGE_TOKEN);
+    sessionStorage.removeItem(STORAGE_REFRESH);
     sessionStorage.removeItem(STORAGE_NAME);
     window.clearInterval(state.pollTimer);
+    showChangePassword(false);
     showGame(false);
   }
 
@@ -564,7 +639,11 @@
         path = "/v1/commands/recall";
         payload = { army_id: state.selectedArmyId };
       }
-      await api(path, { method: "POST", json: payload });
+      await api(path, {
+        method: "POST",
+        json: payload,
+        headers: { "Idempotency-Key": idempotencyKey() },
+      });
       await refreshAll();
     } catch (error) {
       if (!(error.name === "AbortError" || error instanceof TypeError)) {
@@ -591,7 +670,27 @@
     $("retry-btn").addEventListener("click", probe);
     $("login-form").addEventListener("submit", (event) => {
       event.preventDefault();
-      login($("player-name").value.trim()).catch((error) => {
+      loginAccount($("login-username").value.trim(), $("login-password").value).catch((error) => {
+        if (!(error.name === "AbortError" || error instanceof TypeError)) {
+          $("login-note").textContent = error.message;
+        }
+      });
+    });
+    $("register-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      registerAccount(
+        $("register-username").value.trim(),
+        $("register-email").value.trim(),
+        $("register-password").value
+      ).catch((error) => {
+        if (!(error.name === "AbortError" || error instanceof TypeError)) {
+          $("login-note").textContent = error.message;
+        }
+      });
+    });
+    $("change-password-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      submitPasswordChange($("current-password").value, $("new-password").value).catch((error) => {
         if (!(error.name === "AbortError" || error instanceof TypeError)) {
           $("login-note").textContent = error.message;
         }
@@ -608,7 +707,9 @@
         });
       });
     });
-    $("logout-btn").addEventListener("click", logout);
+    $("logout-btn").addEventListener("click", () => {
+      logout().catch(() => {});
+    });
     $("attack-btn").addEventListener("click", () => sendOrder("attack"));
     $("move-btn").addEventListener("click", () => sendOrder("move"));
     $("recall-btn").addEventListener("click", () => sendOrder("recall"));

@@ -39,7 +39,7 @@ def test_attack_resolves_while_the_player_is_offline_and_replay_is_a_noop(client
     alice = _login(client, "Alice")
     bob = _login(client, "Bob")
 
-    clock = client.get("/v1/time")
+    clock = client.get("/v1/time", headers=alice)
     assert clock.status_code == 200
     assert clock.json()["offset_seconds"] == 0
 

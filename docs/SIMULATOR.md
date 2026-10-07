@@ -8,7 +8,7 @@ Phase 8 (load and failure injection) is not this tool. Command submission is a s
 
 ## What the bots can do
 
-They log in with `POST /v1/auth/dev-login` and then use only the player routes:
+CI registers each bot with `POST /v1/auth/register`, refreshes once, and then uses only the player routes. The password is derived from the seed and the bot name inside the process. It is not stored in the world snapshot. Staging does not call dev-login. It sets a temporary password on each existing player through the admin accounts API, changes that password, and refreshes. That replaces any password those players already had. Every command sends an `Idempotency-Key`. After the scenario, CI runs an auth coverage matrix (wrong password, expired and forged tokens, a token for player A used on player B's army, refresh reuse, login and command rate limits, an idempotent replay, and dev-login disabled in production mode). The run is FAIL unless that matrix is `COMPLETE` and every invariant is PASS.
 
 | Action | Endpoint |
 | --- | --- |
@@ -43,7 +43,7 @@ The admin token is read from `SIMCORE_ADMIN_TOKEN` at runtime. The simulator doe
 
 ## CI mode (local)
 
-CI mode migrates the database, seeds `Bot01` … if the database has **no** players, starts an API on `127.0.0.1`, and plays. Time moves by `POST /v1/admin/clock/advance`. Due events are applied by `POST /v1/admin/worker/tick`, which is the same worker path the process already uses. The base clock is the test `FrozenClock` fixed at `2026-01-01T00:00:00Z`, so a run finishes in well under two minutes of wall time. Results are not invented: every battle and ledger row is produced by that API and that worker.
+CI mode migrates the database, starts an API on `127.0.0.1`, registers `Bot01` … over HTTP, then attaches cities and armies if the database has **no** cities, and plays. Time moves by `POST /v1/admin/clock/advance`. Due events are applied by `POST /v1/admin/worker/tick`, which is the same worker path the process already uses. The base clock is the test `FrozenClock` fixed at `2026-01-01T00:00:00Z`, so a run finishes in well under two minutes of wall time. Results are not invented: every battle and ledger row is produced by that API and that worker.
 
 Use a fresh database whose name contains `test` or `_sim`. `simcore_test` and `simcore_sim` are the usual names. The simulator will not seed `simcore` (the docker-compose and VPS database) and it will not delete players that are already there.
 

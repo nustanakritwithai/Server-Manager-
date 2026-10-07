@@ -197,6 +197,7 @@ function Write-SimcoreEnv {
         "SIMCORE_ADMIN_TOKEN",
         "SIMCORE_ADMIN_PASSWORD_HASH",
         "SIMCORE_ADMIN_SESSION_SECRET",
+        "SIMCORE_PLAYER_TOKEN_SECRET",
         "SIMCORE_ADMIN_SESSION_VERSION",
         "SIMCORE_ADMIN_SESSION_TTL_SECONDS",
         "SIMCORE_ENABLE_ADMIN",
@@ -1076,6 +1077,22 @@ function Get-SimcoreDatabaseUrlForPassword {
     return $canonical
 }
 
+function Test-SimcorePlayerTokenSecret {
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
+    if ($Value.Length -lt 32) { return $false }
+    $folded = $Value.ToLowerInvariant()
+    $weak = @(
+        "change_me",
+        "changeme",
+        "dev",
+        "dev-player",
+        "dev-player-token-secret-not-for-production"
+    )
+    if ($weak -contains $folded) { return $false }
+    return $true
+}
+
 function Complete-SimcoreProductionEnv {
     param(
         [hashtable]$Map,
@@ -1096,6 +1113,10 @@ function Complete-SimcoreProductionEnv {
     }
     if ([string]::IsNullOrWhiteSpace([string]$Map["SIMCORE_ADMIN_TOKEN"])) {
         $Map["SIMCORE_ADMIN_TOKEN"] = New-SimcoreSecret
+        $changed = $true
+    }
+    if (-not (Test-SimcorePlayerTokenSecret ([string]$Map["SIMCORE_PLAYER_TOKEN_SECRET"]))) {
+        $Map["SIMCORE_PLAYER_TOKEN_SECRET"] = New-SimcoreSecret -Length 48
         $changed = $true
     }
     $databaseUrl = Get-SimcoreDatabaseUrlForPassword -Url ([string]$Map["SIMCORE_DATABASE_URL"]) -Password ([string]$Map["SIMCORE_DB_PASSWORD"])
@@ -1150,10 +1171,11 @@ function New-SimcoreProductionEnv {
     if ((-not $existed) -or $completed.Changed) {
         Write-SimcoreEnv -Path $Path -Map $completed.Map
         if ($existed) {
-            Write-Host "Filled blank values in $Path. Passwords and the admin token that already had a value were left unchanged."
+            Write-Host "Filled blank or weak values in $Path. Passwords and tokens that were already strong were left unchanged."
+            Write-Host "A player token signing secret was stored in .env.prod when it was missing or weak. It was not printed."
         } else {
             Write-Host "Wrote $Path"
-            Write-Host "The database password and admin token were generated into that file. They are not printed here."
+            Write-Host "The database password, admin token, and player token signing secret were generated into that file. They are not printed here."
         }
     }
     return $completed.Map

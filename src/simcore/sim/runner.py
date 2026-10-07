@@ -24,12 +24,20 @@ from typing import Any
 import uvicorn
 from sqlalchemy import func, select, text
 
+from simcore.sim.auth_flow import (
+    auth_headers,
+    bot_password,
+    bot_record,
+    change_password,
+    login_bot,
+    refresh_bot,
+    register_bot,
+)
 from simcore.sim.bots import UNAVAILABLE_ACTIONS, PlannedCommand, plan_tick
 from simcore.sim.http import ApiClient, latency_summary
 from simcore.sim.ids import install as install_trace_ids
 from simcore.sim.report import write_report
 from simcore.sim.safety import SafetyError, ensure_safe, is_live_database
-from simcore.sim.seed_world import profile_for, seed_bots
 from simcore.sim.thresholds import (
     CI_DEFAULT_STEP_SECONDS,
     CI_DEFAULT_TICKS,
@@ -104,6 +112,8 @@ def run(config: SimConfig) -> dict[str, Any]:
             "SIMCORE_MONITOR_SAMPLE_SECONDS",
             "SIMCORE_EMBEDDED_WORKER",
             "SIMCORE_ENV",
+            "SIMCORE_PLAYER_LOGIN_MAX_FAILURES",
+            "SIMCORE_PLAYER_LOGIN_IP_MAX_FAILURES",
         )
     }
     restore_ids = None
@@ -119,26 +129,19 @@ def run(config: SimConfig) -> dict[str, Any]:
             os.environ["SIMCORE_MONITOR_API_SAMPLER"] = "false"
             os.environ["SIMCORE_MONITOR_SAMPLE_SECONDS"] = "0"
             os.environ["SIMCORE_EMBEDDED_WORKER"] = "false"
+            # Coverage hits lockout and the IP limiter. The command limit stays
+            # at the server default so the scenario itself is not throttled.
+            os.environ["SIMCORE_PLAYER_LOGIN_MAX_FAILURES"] = "3"
+            os.environ["SIMCORE_PLAYER_LOGIN_IP_MAX_FAILURES"] = "5"
             if os.environ.get("SIMCORE_ENV", "").strip().lower() == "production":
                 os.environ["SIMCORE_ENV"] = "development"
         _reload_settings()
         if config.mode == "ci":
             _migrate()
             restore_ids = install_trace_ids(config.seed)
-            from simcore.clock import FrozenClock, OffsetClock
-            from simcore.db import get_sessionmaker
+            from simcore.clock import FrozenClock
 
             frozen = FrozenClock(CI_EPOCH)
-            session = get_sessionmaker()()
-            try:
-                now = OffsetClock(session, frozen).now()
-                seed_bots(session, now, config.players)
-                session.commit()
-            except Exception:
-                session.rollback()
-                raise
-            finally:
-                session.close()
             server, thread, port = _start_server(frozen)
             base_url = f"http://127.0.0.1:{port}"
             ensure_safe(
@@ -160,6 +163,8 @@ def run(config: SimConfig) -> dict[str, Any]:
         api = ApiClient(base_url, admin_token=config.admin_token)
         _wait_ready(api)
         bots = _login_bots(api, config)
+        if config.mode == "ci":
+            _attach_holdings(frozen, [str(bot["name"]) for bot in bots])
         rng = random.Random(config.seed)
         sequence: list[dict[str, Any]] = []
         max_lag = 0.0
@@ -167,7 +172,7 @@ def run(config: SimConfig) -> dict[str, Any]:
         for tick in range(ticks):
             views = [_view(api, bot) for bot in bots]
             planned = plan_tick(rng, tick=tick, players=views, command_rate=config.command_rate)
-            sequence.extend(submit_commands(api, bots, planned, overlap=1))
+            sequence.extend(submit_commands(api, bots, planned, overlap=1, seed=config.seed))
             if config.mode == "ci":
                 _advance(api, int(step_or_pause))
                 observed = _sample_lag(api)
@@ -178,10 +183,14 @@ def run(config: SimConfig) -> dict[str, Any]:
                     raise RuntimeError("worker is paused; the simulator does not resume a restore")
             elif tick + 1 < ticks and step_or_pause > 0:
                 time.sleep(step_or_pause)
+        auth_coverage = None
         if config.mode == "ci":
-            caught = _catch_up(api)
+            caught = _catch_up(api, str(bots[0]["token"]))
             max_lag = max(max_lag, caught["max_lag"])
             drain_failures.extend(caught["failed"])
+            from simcore.sim.auth_coverage import run_auth_coverage
+
+            auth_coverage = run_auth_coverage(api, bots, seed=config.seed)
 
         if config.mode == "staging":
             max_lag = max(max_lag, _sample_lag(api))
@@ -205,6 +214,7 @@ def run(config: SimConfig) -> dict[str, Any]:
             verified=verified,
             latency=latency,
             drain_failures=drain_failures,
+            auth_coverage=auth_coverage,
         )
         write_report(config.report_dir, payload)
         return payload
@@ -231,6 +241,7 @@ def submit_commands(
     planned: list[PlannedCommand],
     *,
     overlap: int,
+    seed: int,
 ) -> list[dict[str, Any]]:
     """Send planned commands.
 
@@ -246,17 +257,18 @@ def submit_commands(
         )
     tokens = {int(bot["id"]): bot["token"] for bot in bots}
     sent: list[dict[str, Any]] = []
-    for command in planned:
+    for index, command in enumerate(planned):
         row = command.as_dict()
         if command.action == "skip" or command.body is None:
             row.update({"http_status": None, "result": "skipped", "trace_id": None})
             sent.append(row)
             continue
         path = _COMMAND_PATHS[command.action]
+        key = f"sim-{seed}-{command.tick}-{command.player_id}-{command.action}-{index}"
         status, body = api.json(
             "POST",
             path,
-            headers={"Authorization": f"Bearer {tokens[command.player_id]}"},
+            headers=auth_headers(tokens[command.player_id], idempotency_key=key),
             json=command.body,
         )
         trace_id = body.get("trace_id") if isinstance(body, dict) else None
@@ -287,6 +299,7 @@ def _payload(
     verified: dict[str, Any],
     latency: dict[str, Any],
     drain_failures: list[int],
+    auth_coverage: dict[str, Any] | None,
 ) -> dict[str, Any]:
     accepted = sum(1 for row in sequence if row["result"] == "accepted")
     rejected = sum(1 for row in sequence if row["result"] == "rejected")
@@ -347,6 +360,19 @@ def _payload(
     invariants.append(latency_row)
     if latency_status != "PASS":
         failed.append(latency_row)
+    if auth_coverage is not None:
+        complete = auth_coverage.get("verdict") == "COMPLETE"
+        gaps = auth_coverage.get("gaps") or []
+        auth_row = {
+            "invariant": "auth_coverage",
+            "status": "PASS" if complete else "FAIL",
+            "required": True,
+            "trace_id": None,
+            "detail": "every auth case passed" if complete else "; ".join(str(gap) for gap in gaps),
+        }
+        invariants.append(auth_row)
+        if not complete:
+            failed.append(auth_row)
 
     result = "PASS"
     for item in invariants:
@@ -385,6 +411,7 @@ def _payload(
         "invariants": invariants,
         "failed_invariants": failed,
         "skipped_actions": [dict(item) for item in UNAVAILABLE_ACTIONS],
+        "auth_coverage": auth_coverage,
         "command_sequence": [
             {
                 "tick": row["tick"],
@@ -490,33 +517,89 @@ def _wait_ready(api: ApiClient) -> None:
 
 def _login_bots(api: ApiClient, config: SimConfig) -> list[dict[str, Any]]:
     if config.mode == "ci":
-        names = [f"Bot{index:02d}" for index in range(1, config.players + 1)]
+        bots = _register_ci_bots(api, config)
     else:
-        status, body = api.json("GET", "/v1/admin/players", headers=api.admin_headers)
-        if status != 200 or not isinstance(body, dict):
-            raise RuntimeError(f"could not list players (HTTP {status})")
-        rows = body.get("players") or []
-        if len(rows) < config.players:
-            raise RuntimeError(
-                f"the server has {len(rows)} players and --players is {config.players}. "
-                "Staging does not create players."
-            )
-        names = [str(row["name"]) for row in rows[: config.players]]
-    bots = []
-    for index, name in enumerate(names):
-        status, body = api.json("POST", "/v1/auth/dev-login", json={"name": name})
-        if status != 200 or not isinstance(body, dict) or "token" not in body:
-            raise RuntimeError(f"dev login for {name} failed (HTTP {status})")
-        bots.append(
-            {
-                "id": int(body["player_id"]),
-                "name": str(body.get("player_name") or name),
-                "token": str(body["token"]),
-                "profile": profile_for(index),
-            }
-        )
+        bots = _claim_staging_bots(api, config)
     bots.sort(key=lambda bot: int(bot["id"]))
     return bots
+
+
+def _register_ci_bots(api: ApiClient, config: SimConfig) -> list[dict[str, Any]]:
+    """Register each bot, then rotate the refresh token once before play."""
+
+    bots = []
+    for index in range(config.players):
+        name = f"Bot{index + 1:02d}"
+        password = bot_password(config.seed, name, kind="play")
+        registered = register_bot(api, name=name, password=password)
+        refreshed = refresh_bot(api, str(registered["refresh_token"]))
+        bots.append(bot_record(refreshed, name=name, index=index))
+    return bots
+
+
+def _claim_staging_bots(api: ApiClient, config: SimConfig) -> list[dict[str, Any]]:
+    """Give existing players a temporary password, then a seed-derived password.
+
+    Staging does not create players. A player who already has a password is
+    reset: the temporary password replaces it and forces a change. Dev-login
+    is not used, because production leaves that route off.
+    """
+
+    status, body = api.json("GET", "/v1/admin/players", headers=api.admin_headers)
+    if status != 200 or not isinstance(body, dict):
+        raise RuntimeError(f"could not list players (HTTP {status})")
+    rows = body.get("players") or []
+    if len(rows) < config.players:
+        raise RuntimeError(
+            f"the server has {len(rows)} players and --players is {config.players}. "
+            "Staging does not create players."
+        )
+    bots = []
+    for index, row in enumerate(rows[: config.players]):
+        if not isinstance(row, dict):
+            raise RuntimeError("player list row was not an object")
+        name = str(row["name"])
+        player_id = int(row["id"])
+        temporary = bot_password(config.seed, name, kind="temp")
+        playing = bot_password(config.seed, name, kind="play")
+        claimed_status, claimed = api.json(
+            "POST",
+            "/v1/admin/accounts/temporary-password",
+            headers=api.admin_headers,
+            json={"player_id": player_id, "password": temporary},
+        )
+        if claimed_status != 200 or not isinstance(claimed, dict):
+            raise RuntimeError(
+                f"could not set a temporary password for {name} (HTTP {claimed_status}): {claimed}. "
+                "The player name has to be a valid username."
+            )
+        logged = login_bot(api, name=str(claimed.get("username") or name), password=temporary)
+        changed = change_password(
+            api,
+            access_token=str(logged["access_token"]),
+            current=temporary,
+            new=playing,
+        )
+        refreshed = refresh_bot(api, str(changed["refresh_token"]))
+        bots.append(bot_record(refreshed, name=name, index=index))
+    return bots
+
+
+def _attach_holdings(frozen: Any, names: list[str]) -> None:
+    from simcore.clock import OffsetClock
+    from simcore.db import get_sessionmaker
+    from simcore.sim.seed_world import seed_holdings
+
+    session = get_sessionmaker()()
+    try:
+        now = OffsetClock(session, frozen).now()
+        seed_holdings(session, now, names)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 
 def _view(api: ApiClient, bot: dict[str, Any]) -> dict[str, Any]:
@@ -587,7 +670,7 @@ def _drain(api: ApiClient) -> dict[str, Any]:
     return {"processed": processed, "failed": failed, "paused": paused}
 
 
-def _catch_up(api: ApiClient) -> dict[str, Any]:
+def _catch_up(api: ApiClient, token: str) -> dict[str, Any]:
     """Advance to each future due_at and drain. Stops when nothing is pending."""
 
     from simcore.constants import EventStatus
@@ -614,7 +697,7 @@ def _catch_up(api: ApiClient) -> dict[str, Any]:
             session.close()
         if pending == 0:
             break
-        now = _server_now(api)
+        now = _server_now(api, token)
         if due is not None:
             due_at = due if due.tzinfo else due.replace(tzinfo=timezone.utc)
             if due_at > now:
@@ -630,8 +713,8 @@ def _catch_up(api: ApiClient) -> dict[str, Any]:
     return {"failed": failed, "max_lag": max_lag}
 
 
-def _server_now(api: ApiClient) -> datetime:
-    status, body = api.json("GET", "/v1/time")
+def _server_now(api: ApiClient, token: str) -> datetime:
+    status, body = api.json("GET", "/v1/time", headers=auth_headers(token))
     if status != 200 or not isinstance(body, dict):
         raise RuntimeError("GET /v1/time failed")
     raw = body.get("server_time")

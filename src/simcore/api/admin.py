@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from simcore.api.admin_accounts import router as admin_accounts_router
 from simcore.api.admin_login import router as admin_login_router
 from simcore.api.deps import get_clock, get_session, require_admin
 from simcore.api.trace_admin import audit_router, trace_router
@@ -38,6 +39,7 @@ from simcore.worker import run_once
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
 router.include_router(admin_login_router)
+router.include_router(admin_accounts_router)
 router.include_router(snapshot_router)
 router.include_router(trace_router)
 router.include_router(audit_router)
@@ -53,7 +55,7 @@ class AdvanceIn(BaseModel):
 
 @router.get("/dashboard")
 def admin_dashboard(
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     clock: Annotated[OffsetClock, Depends(get_clock)],
     _: Annotated[Settings, Depends(require_admin)],
 ) -> dict[str, object]:
@@ -65,7 +67,7 @@ def admin_dashboard(
 
 @router.get("/events")
 def admin_list_events(
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     _: Annotated[Settings, Depends(require_admin)],
     status: str | None = None,
     limit: int = Query(default=100, ge=1, le=500),
@@ -76,7 +78,7 @@ def admin_list_events(
 @router.get("/events/{event_id}")
 def admin_event_detail(
     event_id: int,
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     clock: Annotated[OffsetClock, Depends(get_clock)],
     _: Annotated[Settings, Depends(require_admin)],
 ) -> dict[str, object]:
@@ -85,7 +87,7 @@ def admin_event_detail(
 
 @router.get("/armies")
 def list_armies(
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     clock: Annotated[OffsetClock, Depends(get_clock)],
     _: Annotated[Settings, Depends(require_admin)],
 ) -> dict[str, object]:
@@ -96,7 +98,7 @@ def list_armies(
 
 @router.get("/transactions")
 def admin_list_transactions(
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     _: Annotated[Settings, Depends(require_admin)],
     limit: int = Query(default=100, ge=1, le=500),
     player_id: int | None = None,
@@ -116,7 +118,7 @@ def admin_list_transactions(
 
 @router.get("/players")
 def admin_list_players(
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     _: Annotated[Settings, Depends(require_admin)],
 ) -> dict[str, object]:
     return list_players(session)
@@ -125,7 +127,7 @@ def admin_list_players(
 @router.get("/players/{player_id}")
 def admin_player_detail(
     player_id: int,
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     clock: Annotated[OffsetClock, Depends(get_clock)],
     _: Annotated[Settings, Depends(require_admin)],
 ) -> dict[str, object]:
@@ -134,7 +136,7 @@ def admin_player_detail(
 
 @router.get("/cities")
 def admin_list_cities(
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     _: Annotated[Settings, Depends(require_admin)],
     player_id: int | None = None,
 ) -> dict[str, object]:
@@ -144,7 +146,7 @@ def admin_list_cities(
 @router.get("/cities/{city_id}")
 def admin_city_detail(
     city_id: int,
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     _: Annotated[Settings, Depends(require_admin)],
 ) -> dict[str, object]:
     return city_detail(session, city_id)
@@ -153,7 +155,7 @@ def admin_city_detail(
 @router.get("/armies/{army_id}")
 def admin_army_detail(
     army_id: int,
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     clock: Annotated[OffsetClock, Depends(get_clock)],
     _: Annotated[Settings, Depends(require_admin)],
 ) -> dict[str, object]:
@@ -162,7 +164,7 @@ def admin_army_detail(
 
 @router.get("/movements")
 def admin_list_movements(
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     _: Annotated[Settings, Depends(require_admin)],
     status: str | None = None,
     army_id: int | None = None,
@@ -174,7 +176,7 @@ def admin_list_movements(
 @router.get("/movements/{movement_id}")
 def admin_movement_detail(
     movement_id: int,
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     clock: Annotated[OffsetClock, Depends(get_clock)],
     _: Annotated[Settings, Depends(require_admin)],
 ) -> dict[str, object]:
@@ -183,7 +185,7 @@ def admin_movement_detail(
 
 @router.get("/reports")
 def admin_list_reports(
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     _: Annotated[Settings, Depends(require_admin)],
     limit: int = Query(default=100, ge=1, le=500),
     event_id: int | None = None,
@@ -195,7 +197,7 @@ def admin_list_reports(
 @router.get("/reports/{report_id}")
 def admin_report_detail(
     report_id: int,
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     _: Annotated[Settings, Depends(require_admin)],
 ) -> dict[str, object]:
     return report_detail(session, report_id)
@@ -205,7 +207,7 @@ def admin_report_detail(
 def advance_clock(
     body: AdvanceIn,
     request: Request,
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     clock: Annotated[OffsetClock, Depends(get_clock)],
     _: Annotated[Settings, Depends(require_admin)],
 ) -> dict[str, object]:
@@ -239,7 +241,7 @@ def advance_clock(
 def run_event(
     event_id: int,
     request: Request,
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     clock: Annotated[OffsetClock, Depends(get_clock)],
     _: Annotated[Settings, Depends(require_admin)],
 ) -> dict[str, object]:

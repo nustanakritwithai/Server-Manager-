@@ -32,11 +32,21 @@ try {
     Stop-SimcoreStack
     Write-Host "Updating $RepoRoot"
     Invoke-SimcoreGitPull -RepoRoot $RepoRoot
+    # The pull may have changed these helpers. Load the new copies before migrations.
+    . "$PSScriptRoot\Common.ps1"
     Ensure-Venv -RepoRoot $RepoRoot
-    Import-SimcoreEnvToProcess -Path $envFile
-    # Re-read after pull in case the script itself changed, but keep the secrets file as the source of truth.
     $cfg = Read-SimcoreEnv $envFile
     if (-not $cfg["SIMCORE_INSTALL_ROOT"]) { $cfg["SIMCORE_INSTALL_ROOT"] = $installRoot }
+    $playerSecretReady = Test-SimcorePlayerTokenSecret ([string]$cfg["SIMCORE_PLAYER_TOKEN_SECRET"])
+    $completed = Complete-SimcoreProductionEnv -Map $cfg -InstallRoot $installRoot -ApiDomain ([string]$cfg["API_DOMAIN"]) -ApiPort ([string]$cfg["API_PORT"]) -AcmeEmail ([string]$cfg["ACME_EMAIL"])
+    if ($completed.Changed) {
+        Write-SimcoreEnv -Path $envFile -Map $completed.Map
+    }
+    if (-not $playerSecretReady) {
+        Write-Host "A player token signing secret was stored in .env.prod. It was not printed."
+    }
+    $cfg = $completed.Map
+    Import-SimcoreEnvToProcess -Path $envFile
     Invoke-SimcoreMigrations -RepoRoot $RepoRoot
     Disable-PublicPostgres
     Enable-WebFirewall

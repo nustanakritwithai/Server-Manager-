@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from simcore.api.deps import get_clock, get_current_player, get_session
-from simcore.auth import DEV_AUTH_WARNING, issue_dev_token
+from simcore.api.command_guard import run_command
+from simcore.api.deps import get_authenticated_player, get_clock, get_current_player, get_session
+from simcore.api.player_auth import router as player_auth_router
 from simcore.clock import OffsetClock
 from simcore.errors import GameError
 from simcore.game.commands import attack_city, move_army, queue_build, queue_research, recall_army
@@ -17,10 +18,7 @@ from simcore.models import Army, BattleReport, City, Event, Player
 from simcore.present import army_body, city_body, movement_body, report_body
 
 router = APIRouter(prefix="/v1")
-
-
-class DevLoginIn(BaseModel):
-    name: str = Field(min_length=1, max_length=40)
+router.include_router(player_auth_router)
 
 
 class MoveIn(BaseModel):
@@ -57,29 +55,20 @@ def _require_city(session: Session, player: Player, city_id: int) -> City:
 
 
 @router.get("/time", tags=["time"])
-def server_time(clock: Annotated[OffsetClock, Depends(get_clock)]) -> dict[str, object]:
-    """Server clock the client uses to count down arrive_at locally."""
+def server_time(
+    clock: Annotated[OffsetClock, Depends(get_clock)],
+    _: Annotated[Player, Depends(get_authenticated_player)],
+) -> dict[str, object]:
+    """Server clock the client uses to count down arrive_at locally.
+
+    Requires a player access token. It does not accept a player id in the query.
+    """
 
     now = clock.now()
     return {
         "server_time": now,
         "offset_seconds": clock.offset_seconds,
         "unix_ms": int(now.timestamp() * 1000),
-    }
-
-
-@router.post("/auth/dev-login", tags=["auth"])
-def dev_login(body: DevLoginIn, session: Annotated[Session, Depends(get_session)]) -> dict[str, object]:
-    player = session.scalar(select(Player).where(Player.name == body.name))
-    if player is None:
-        raise GameError("no such player", status_code=404, code="not_found")
-    return {
-        "token": issue_dev_token(player.id),
-        "token_type": "bearer",
-        "player_id": player.id,
-        "player_name": player.name,
-        "dev_only": True,
-        "warning": DEV_AUTH_WARNING,
     }
 
 
@@ -91,7 +80,7 @@ def me(player: Annotated[Player, Depends(get_current_player)]) -> dict[str, obje
 @router.get("/me/cities", tags=["player"])
 def my_cities(
     player: Annotated[Player, Depends(get_current_player)],
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     clock: Annotated[OffsetClock, Depends(get_clock)],
 ) -> dict[str, object]:
     now = clock.now()
@@ -105,7 +94,7 @@ def my_cities(
 def my_city(
     city_id: int,
     player: Annotated[Player, Depends(get_current_player)],
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     clock: Annotated[OffsetClock, Depends(get_clock)],
 ) -> dict[str, object]:
     city = _require_city(session, player, city_id)
@@ -116,7 +105,7 @@ def my_city(
 @router.get("/map/cities", tags=["map"])
 def map_cities(
     player: Annotated[Player, Depends(get_current_player)],
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
 ) -> dict[str, object]:
     cities = session.scalars(select(City).order_by(City.id)).all()
     payload = []
@@ -130,7 +119,7 @@ def map_cities(
 @router.get("/me/armies", tags=["armies"])
 def my_armies(
     player: Annotated[Player, Depends(get_current_player)],
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     clock: Annotated[OffsetClock, Depends(get_clock)],
 ) -> dict[str, object]:
     now = clock.now()
@@ -141,7 +130,7 @@ def my_armies(
 @router.get("/me/reports", tags=["reports"])
 def my_reports(
     player: Annotated[Player, Depends(get_current_player)],
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
 ) -> dict[str, object]:
     reports = session.scalars(
         select(BattleReport)
@@ -155,7 +144,7 @@ def my_reports(
 def my_report(
     report_id: int,
     player: Annotated[Player, Depends(get_current_player)],
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
 ) -> dict[str, object]:
     report = session.get(BattleReport, report_id)
     if report is None:
@@ -165,61 +154,100 @@ def my_report(
     return report_body(report)
 
 
-@router.post("/commands/move", tags=["commands"])
+@router.post("/commands/move", tags=["commands"], response_model=None)
 def command_move(
     body: MoveIn,
+    request: Request,
     player: Annotated[Player, Depends(get_current_player)],
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     clock: Annotated[OffsetClock, Depends(get_clock)],
 ) -> dict[str, object]:
-    movement, event = move_army(
-        session, player, body.army_id, body.destination_city_id, clock.now(), relocate=body.relocate
+    # Any new POST /v1/commands/* route must call run_command so the rate limit
+    # and the Idempotency-Key apply. The player argument is the token's player.
+    return run_command(
+        request,
+        session,
+        player,
+        body,
+        lambda: movement_body(
+            *move_army(
+                session,
+                player,
+                body.army_id,
+                body.destination_city_id,
+                clock.now(),
+                relocate=body.relocate,
+            )
+        ),
     )
-    return movement_body(movement, event)
 
 
-@router.post("/commands/attack", tags=["commands"])
+@router.post("/commands/attack", tags=["commands"], response_model=None)
 def command_attack(
     body: AttackIn,
+    request: Request,
     player: Annotated[Player, Depends(get_current_player)],
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     clock: Annotated[OffsetClock, Depends(get_clock)],
 ) -> dict[str, object]:
-    movement, event = attack_city(session, player, body.army_id, body.target_city_id, clock.now())
-    return movement_body(movement, event)
+    return run_command(
+        request,
+        session,
+        player,
+        body,
+        lambda: movement_body(*attack_city(session, player, body.army_id, body.target_city_id, clock.now())),
+    )
 
 
-@router.post("/commands/recall", tags=["commands"])
+@router.post("/commands/recall", tags=["commands"], response_model=None)
 def command_recall(
     body: RecallIn,
+    request: Request,
     player: Annotated[Player, Depends(get_current_player)],
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     clock: Annotated[OffsetClock, Depends(get_clock)],
 ) -> dict[str, object]:
-    movement, event = recall_army(session, player, body.army_id, clock.now())
-    return movement_body(movement, event)
+    return run_command(
+        request,
+        session,
+        player,
+        body,
+        lambda: movement_body(*recall_army(session, player, body.army_id, clock.now())),
+    )
 
 
-@router.post("/commands/build", tags=["commands"])
+@router.post("/commands/build", tags=["commands"], response_model=None)
 def command_build(
     body: BuildIn,
+    request: Request,
     player: Annotated[Player, Depends(get_current_player)],
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     clock: Annotated[OffsetClock, Depends(get_clock)],
 ) -> dict[str, object]:
-    event = queue_build(session, player, body.city_id, body.building, clock.now())
-    return _timed_event_body(event)
+    return run_command(
+        request,
+        session,
+        player,
+        body,
+        lambda: _timed_event_body(queue_build(session, player, body.city_id, body.building, clock.now())),
+    )
 
 
-@router.post("/commands/research", tags=["commands"])
+@router.post("/commands/research", tags=["commands"], response_model=None)
 def command_research(
     body: ResearchIn,
+    request: Request,
     player: Annotated[Player, Depends(get_current_player)],
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     clock: Annotated[OffsetClock, Depends(get_clock)],
 ) -> dict[str, object]:
-    event = queue_research(session, player, body.tech, clock.now())
-    return _timed_event_body(event)
+    return run_command(
+        request,
+        session,
+        player,
+        body,
+        lambda: _timed_event_body(queue_research(session, player, body.tech, clock.now())),
+    )
 
 
 def _timed_event_body(event: Event) -> dict[str, object]:

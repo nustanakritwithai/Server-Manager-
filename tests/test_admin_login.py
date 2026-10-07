@@ -27,6 +27,7 @@ def _settings(**overrides: object) -> Settings:
         "admin_login_max_failures": 3,
         "admin_login_window_seconds": 600,
         "admin_session_version": 1,
+        "player_token_secret": "p" * 48,
     }
     values.update(overrides)
     get_settings.cache_clear()

@@ -1,8 +1,8 @@
 """Initial world for CI bots.
 
-This writes players, cities, and armies once, before any command. There is
-no public endpoint that creates a player. After this returns, bots act only
-through HTTP. Staging mode does not call this.
+CI registers each bot over HTTP, then this module attaches cities and armies.
+Staging does not call it. A second call on a database that already has cities
+refuses, and it does not delete rows.
 """
 
 from __future__ import annotations
@@ -74,30 +74,11 @@ def seed_bots(session: Session, now: datetime, player_count: int) -> dict[str, o
         )
 
     for index in range(player_count):
-        profile = profile_for(index)
-        number = index + 1
-        name = f"Bot{number:02d}"
+        name = f"Bot{index + 1:02d}"
         player = Player(name=name, research={}, created_at=now)
         session.add(player)
         session.flush()
-
-        home_x = index * _PLAYER_SPACING
-        home = _city(player.id, f"{name} Home", home_x, 0, now)
-        camp = _city(player.id, f"{name} Camp", home_x, _SECOND_CITY_DY, now)
-        session.add_all([home, camp])
-        session.flush()
-        session.add(
-            Army(
-                player_id=player.id,
-                name=f"{name} Army",
-                home_city_id=home.id,
-                location_city_id=home.id,
-                status=ArmyStatus.GARRISONED,
-                units=list(_UNITS[profile]),
-                created_at=now,
-            )
-        )
-        session.flush()
+        _add_holdings(session, player, index, now)
 
     return {
         "players": player_count,
@@ -106,6 +87,58 @@ def seed_bots(session: Session, now: datetime, player_count: int) -> dict[str, o
         "units": opening_units(player_count),
         "armies": expected_army_count(player_count),
     }
+
+
+def seed_holdings(session: Session, now: datetime, names: list[str]) -> dict[str, object]:
+    """Attach a home, a camp, and one army to players that already exist.
+
+    Registration creates the player rows. This does not create players and does
+    not delete anything. It refuses when the database already has a city.
+    """
+
+    if not names:
+        raise ValueError("names must not be empty")
+    existing = session.scalar(select(func.count()).select_from(City))
+    if existing:
+        raise RuntimeError(
+            "database already has cities. CI mode needs a fresh database after migrations. "
+            "It will not delete them."
+        )
+    for index, name in enumerate(names):
+        player = session.scalar(select(Player).where(Player.name == name))
+        if player is None:
+            raise RuntimeError(f"player {name} is not registered")
+        _add_holdings(session, player, index, now)
+    count = len(names)
+    return {
+        "players": count,
+        "profiles": [profile_for(index) for index in range(count)],
+        "resources": opening_resources(count),
+        "units": opening_units(count),
+        "armies": expected_army_count(count),
+    }
+
+
+def _add_holdings(session: Session, player: Player, index: int, now: datetime) -> None:
+    profile = profile_for(index)
+    name = player.name
+    home_x = index * _PLAYER_SPACING
+    home = _city(player.id, f"{name} Home", home_x, 0, now)
+    camp = _city(player.id, f"{name} Camp", home_x, _SECOND_CITY_DY, now)
+    session.add_all([home, camp])
+    session.flush()
+    session.add(
+        Army(
+            player_id=player.id,
+            name=f"{name} Army",
+            home_city_id=home.id,
+            location_city_id=home.id,
+            status=ArmyStatus.GARRISONED,
+            units=list(_UNITS[profile]),
+            created_at=now,
+        )
+    )
+    session.flush()
 
 
 def _city(player_id: int, name: str, x: int, y: int, now: datetime) -> City:

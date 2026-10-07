@@ -363,3 +363,88 @@ class MonitoringCheckState(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PlayerAccount(Base):
+    """Login for one player. Not part of the world snapshot.
+
+    ``player_id`` is a logical link, not a foreign key. Snapshot restore deletes
+    and reinserts ``players``; a foreign key would either block that restore or
+    delete these rows with it. Existing dev-login players have no row here until
+    an admin sets a temporary password.
+    """
+
+    __tablename__ = "player_accounts"
+    __table_args__ = (
+        Index("uq_player_accounts_username_key", "username_key", unique=True),
+        Index("uq_player_accounts_player_id", "player_id", unique=True),
+        Index(
+            "uq_player_accounts_email_key",
+            "email_key",
+            unique=True,
+            postgresql_where=text("email_key IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    player_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    username: Mapped[str] = mapped_column(String(32), nullable=False)
+    username_key: Mapped[str] = mapped_column(String(32), nullable=False)
+    email: Mapped[str | None] = mapped_column(String(254), nullable=True)
+    email_key: Mapped[str | None] = mapped_column(String(254), nullable=True)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    locked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    failed_login_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    login_locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class PlayerRefreshSession(Base):
+    """One refresh token. The token itself is stored only as a SHA-256 hash.
+
+    Rotation inserts a new row in the same ``family_id`` and sets
+    ``replaced_by_id`` on the old row. Presenting that old token revokes the
+    family. Logout sets ``revoked_at`` without ``replaced_by_id``.
+    """
+
+    __tablename__ = "player_refresh_sessions"
+    __table_args__ = (
+        Index("ix_player_refresh_sessions_account_id", "account_id"),
+        Index("ix_player_refresh_sessions_family_id", "family_id"),
+        Index("uq_player_refresh_sessions_token_hash", "token_hash", unique=True),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("player_accounts.id", ondelete="CASCADE"), nullable=False)
+    family_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    replaced_by_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+
+class CommandIdempotency(Base):
+    """Stored result of one player command key. Not part of the world snapshot.
+
+    Restore deletes these rows. A key minted before the restore must not replay
+    a result that no longer matches the world.
+    """
+
+    __tablename__ = "command_idempotency_keys"
+    __table_args__ = (
+        Index("uq_command_idempotency_player_key", "player_id", "idempotency_key", unique=True),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    player_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status_code: Mapped[int] = mapped_column(Integer, nullable=False)
+    response_body: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)

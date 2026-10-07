@@ -120,6 +120,10 @@ jobs:
               errors.append(f"checksum {first.get('world_checksum')} != {second.get('world_checksum')}")
           if first.get("command_sequence") != second.get("command_sequence"):
               errors.append("command sequences differ")
+          for label, report in (("A", first), ("B", second)):
+              coverage = report.get("auth_coverage") or {}
+              if coverage.get("verdict") != "COMPLETE":
+                  errors.append(label + " auth coverage " + json.dumps(coverage.get("gaps")))
           if errors:
               print("\n".join(errors), file=sys.stderr)
               sys.exit(1)

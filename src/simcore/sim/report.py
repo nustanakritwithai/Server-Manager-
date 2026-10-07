@@ -87,6 +87,20 @@ def render_markdown(payload: dict[str, Any]) -> str:
     lines.extend(["", "## Actions with no endpoint", ""])
     for item in payload.get("skipped_actions") or []:
         lines.append(f"- `{item.get('action')}`: {item.get('reason')}")
+    lines.extend(["", "## Auth coverage", ""])
+    coverage = payload.get("auth_coverage") or {}
+    lines.append(f"Verdict: {coverage.get('verdict') or 'NOT RUN'}.")
+    lines.append("")
+    matrix = coverage.get("matrix") or []
+    if matrix:
+        lines.append("| Case | Status | Detail |")
+        lines.append("| --- | --- | --- |")
+        for row in matrix:
+            detail = str(row.get("detail") or "").replace("|", "/")
+            lines.append(f"| {row.get('name')} | {row.get('status')} | {detail} |")
+    else:
+        lines.append("Not run. CI mode is the run that exercises register, login, and refresh.")
+    lines.append("")
     lines.extend(["", "## Audit chain", ""])
     chain = payload.get("audit_chain") or {}
     lines.append(

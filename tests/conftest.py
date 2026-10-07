@@ -43,6 +43,9 @@ def truncate() -> None:
             text(
                 """
                 TRUNCATE TABLE
+                  command_idempotency_keys,
+                  player_refresh_sessions,
+                  player_accounts,
                   monitoring_check_state,
                   monitoring_samples,
                   worker_process_marks,

@@ -13,6 +13,7 @@ from sqlalchemy import text
 
 from simcore import __version__
 from simcore.admin_auth import AdminSessionBook, LoginRateLimiter
+from simcore.player_auth import SlidingWindowLimiter
 from simcore.api.admin import router as admin_router
 from simcore.api.routes import router
 from simcore.clock import Clock, SystemClock
@@ -80,7 +81,8 @@ def create_app(settings: Settings | None = None, base_clock: Clock | None = None
         description=(
             "The client sends intent (attack, move, recall). "
             "This server validates it, schedules a Movement, and a worker applies the result at arrive_at "
-            "even if the player is offline. Dev login is a placeholder and is not authentication. "
+            "even if the player is offline. Player routes require a bearer access token from "
+            "POST /v1/auth/login. Dev login is off in production. "
             "Production uses the real system clock. Advancing time is an admin-only endpoint."
         ),
         lifespan=lifespan,
@@ -92,13 +94,21 @@ def create_app(settings: Settings | None = None, base_clock: Clock | None = None
         max_failures=settings.admin_login_max_failures,
         window_seconds=settings.admin_login_window_seconds,
     )
+    app.state.player_login_ip = LoginRateLimiter(
+        max_failures=settings.player_login_ip_max_failures,
+        window_seconds=settings.player_login_window_seconds,
+    )
+    app.state.command_limiter = SlidingWindowLimiter(
+        settings.command_rate_limit,
+        settings.command_rate_window_seconds,
+    )
 
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,
         allow_credentials=False,
         allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "Accept", "X-Admin-Token"],
+        allow_headers=["Authorization", "Content-Type", "Accept", "X-Admin-Token", "Idempotency-Key"],
     )
 
     @app.exception_handler(GameError)

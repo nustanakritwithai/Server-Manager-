@@ -38,7 +38,7 @@ class SnapshotRestoreIn(BaseModel):
 def create_snapshot_route(
     body: SnapshotCreateIn,
     request: Request,
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     clock: Annotated[OffsetClock, Depends(get_clock)],
     _: Annotated[Settings, Depends(require_admin)],
 ) -> dict[str, object]:
@@ -75,7 +75,7 @@ def create_snapshot_route(
 
 @router.get("")
 def list_snapshots_route(
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     _: Annotated[Settings, Depends(require_admin)],
     limit: int = Query(default=50, ge=1, le=200),
 ) -> dict[str, object]:
@@ -86,7 +86,7 @@ def list_snapshots_route(
 @router.get("/{snapshot_id}")
 def get_snapshot_route(
     snapshot_id: int,
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     _: Annotated[Settings, Depends(require_admin)],
 ) -> dict[str, object]:
     """Metadata plus the summary counts stored at capture."""
@@ -98,7 +98,7 @@ def get_snapshot_route(
 def inspect_snapshot_route(
     snapshot_id: int,
     request: Request,
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     _: Annotated[Settings, Depends(require_admin)],
 ) -> dict[str, object]:
     """Recomputed counts, payload checksum, and whether they match the stored row."""
@@ -129,7 +129,7 @@ def restore_snapshot_route(
     snapshot_id: int,
     body: SnapshotRestoreIn,
     request: Request,
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     clock: Annotated[OffsetClock, Depends(get_clock)],
     _: Annotated[Settings, Depends(require_admin)],
 ) -> dict[str, object]:
