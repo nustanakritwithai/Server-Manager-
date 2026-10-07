@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from simcore.load.report import overall
+from simcore.load.runner import _LagSplit
 from simcore.load.safety import (
     LoadSafetyError,
     ensure_bounds,
@@ -104,6 +105,27 @@ def test_probe_allows_loopback_without_the_flag() -> None:
 def test_bounds_reject_a_huge_local_job() -> None:
     with pytest.raises(LoadSafetyError):
         ensure_bounds(mode="local", players=100, rate=1, concurrency=1, duration=1)
+
+
+def test_clock_advance_samples_are_not_steady_lag() -> None:
+    split = _LagSplit()
+    split.record(0.0, 0)
+    split.record(0.4, 0)
+    split.record(5370.0, 12658)
+    split.record(4000.0, 12658)
+    split.record(0.0, 12658)
+    split.record(1.5, 12658)
+    assert split.steady == [0.0, 0.4, 0.0, 1.5]
+    assert split.across_advance == [5370.0, 4000.0]
+
+
+def test_steady_growth_without_a_clock_advance_stays_visible() -> None:
+    split = _LagSplit()
+    split.record(0.0, 0)
+    split.record(30.0, 0)
+    split.record(90.0, 0)
+    assert split.steady == [0.0, 30.0, 90.0]
+    assert split.across_advance == []
 
 
 def test_overall_incomplete_is_not_a_pass() -> None:

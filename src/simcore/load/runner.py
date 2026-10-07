@@ -454,9 +454,14 @@ def _shell(
 _LAG_NOTE = (
     "processed_at on events is the game time the worker stored, which this server sets to due_at. "
     "A measured difference near zero confirms that stored timestamp. It is not wall-clock delay. "
-    "monitoring event_queue.lag is game time minus the oldest due event, sampled about every 0.4s. "
-    "Gaps between samples are not filled in. wall_at minus due_at is reported only while the game "
-    "clock offset is still zero; after a clock advance it is NOT INSTRUMENTED."
+    "monitoring_event_queue_lag_seconds is game time minus the oldest due event, sampled about every 0.4s, "
+    "only while the admin clock offset is unchanged and any backlog opened by an earlier offset change has "
+    "already returned to zero. Gaps between samples are not filled in. "
+    "monitoring_event_queue_lag_across_clock_advance_seconds is the same gauge during an admin clock advance "
+    "and until that backlog reaches zero. Those samples are mostly the size of the jump, not wall-clock "
+    "worker delay, and they are not mixed into the steady percentiles. A worker that falls behind while the "
+    "offset stays constant is still in the steady series. wall_at minus due_at is reported only while the "
+    "game clock offset is still zero; after a clock advance it is NOT INSTRUMENTED."
 )
 
 
@@ -504,9 +509,28 @@ def _lag_report(sampler: _Sampler) -> dict[str, Any]:
         }
     return {
         "processed_at_minus_due_at_seconds": processed,
-        "monitoring_event_queue_lag_seconds": number_summary(sampler.queue_lag, unit="seconds")
-        if sampler.queue_lag
-        else {
+        "monitoring_event_queue_lag_seconds": _lag_series(
+            sampler.queue_lag,
+            empty_reason="no steady-clock event_queue.lag sample was recorded",
+        ),
+        "monitoring_event_queue_lag_across_clock_advance_seconds": _lag_series(
+            sampler.queue_lag_clock_advance,
+            empty_reason=(
+                "no sample was taken while an admin clock advance still had a positive game-time backlog. "
+                "This is not a measured lag of zero."
+            ),
+        ),
+        "wall_clock_completion_minus_due_seconds": wall_block,
+        "note": _LAG_NOTE,
+        "monitoring_lag_samples": len(sampler.queue_lag),
+        "monitoring_lag_across_clock_advance_samples": len(sampler.queue_lag_clock_advance),
+        "monitoring_lag_missing_samples": sampler.lag_misses,
+    }
+
+
+def _lag_series(values: list[float], *, empty_reason: str) -> dict[str, Any]:
+    if not values:
+        return {
             "status": "UNKNOWN",
             "unit": "seconds",
             "n": 0,
@@ -514,13 +538,30 @@ def _lag_report(sampler: _Sampler) -> dict[str, Any]:
             "p95": None,
             "p99": None,
             "max": None,
-            "reason": "GET /v1/admin/monitoring did not return a measured event_queue.lag sample",
-        },
-        "wall_clock_completion_minus_due_seconds": wall_block,
-        "note": _LAG_NOTE,
-        "monitoring_lag_samples": len(sampler.queue_lag),
-        "monitoring_lag_missing_samples": sampler.lag_misses,
-    }
+            "reason": empty_reason,
+        }
+    return number_summary(values, unit="seconds")
+
+
+class _LagSplit:
+    """Split event_queue.lag samples so an admin clock jump is not reported as steady lag."""
+
+    def __init__(self) -> None:
+        self.last_offset: int | None = None
+        self.advance_backlog = False
+        self.steady: list[float] = []
+        self.across_advance: list[float] = []
+
+    def record(self, lag: float, offset: int) -> None:
+        if self.last_offset is not None and offset != self.last_offset:
+            self.advance_backlog = True
+        self.last_offset = offset
+        if self.advance_backlog and lag > 0:
+            self.across_advance.append(lag)
+            return
+        if self.advance_backlog:
+            self.advance_backlog = False
+        self.steady.append(lag)
 
 
 def _database_report(sampler: _Sampler) -> dict[str, Any]:
@@ -608,6 +649,8 @@ class _Sampler:
     def __init__(self, ctx: RunContext) -> None:
         self.ctx = ctx
         self.queue_lag: list[float] = []
+        self.queue_lag_clock_advance: list[float] = []
+        self._lag_split = _LagSplit()
         self.api_pool: list[float] = []
         self.worker_pool: list[float] = []
         self.backends: list[float] = []
@@ -669,16 +712,28 @@ class _Sampler:
         found_lag = False
         found_api = False
         found_worker = False
+        lag_value: float | None = None
+        offset: int | None = None
         for item in checks:
             if not isinstance(item, dict):
                 continue
             name = item.get("name")
+            if name == "game.clock":
+                detail = item.get("detail")
+                raw_offset = detail.get("offset_seconds") if isinstance(detail, dict) else None
+                if isinstance(raw_offset, bool):
+                    raw_offset = None
+                if isinstance(raw_offset, int):
+                    offset = raw_offset
+                elif isinstance(raw_offset, float) and raw_offset.is_integer():
+                    offset = int(raw_offset)
+                continue
             value = item.get("value")
             item_status = item.get("status")
             if item_status in {"UNKNOWN", "NOT INSTRUMENTED"} or not isinstance(value, (int, float)):
                 continue
             if name == "event_queue.lag":
-                self.queue_lag.append(float(value))
+                lag_value = float(value)
                 found_lag = True
             elif name == "database.pool":
                 self.api_pool.append(float(value))
@@ -686,7 +741,11 @@ class _Sampler:
             elif name == "worker.pool":
                 self.worker_pool.append(float(value))
                 found_worker = True
-        if not found_lag:
+        if found_lag and lag_value is not None and offset is not None:
+            self._lag_split.record(lag_value, offset)
+            self.queue_lag = self._lag_split.steady
+            self.queue_lag_clock_advance = self._lag_split.across_advance
+        else:
             self.lag_misses += 1
         if not found_api or not found_worker:
             self.pool_misses += 1

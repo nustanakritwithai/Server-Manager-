@@ -134,7 +134,12 @@ def _load_block(load: dict[str, Any]) -> str:
 
 def _lag_block(lag: dict[str, Any]) -> str:
     lines = []
-    for key in ("processed_at_minus_due_at_seconds", "monitoring_event_queue_lag_seconds", "wall_clock_completion_minus_due_seconds"):
+    for key in (
+        "processed_at_minus_due_at_seconds",
+        "monitoring_event_queue_lag_seconds",
+        "monitoring_event_queue_lag_across_clock_advance_seconds",
+        "wall_clock_completion_minus_due_seconds",
+    ):
         block = lag.get(key) or {"status": "UNKNOWN"}
         lines.append(f"- `{key}`: {_series(block)}")
     note = lag.get("note")
