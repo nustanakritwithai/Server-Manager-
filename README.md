@@ -157,7 +157,31 @@ python3 -m http.server 8080
 
 Open http://127.0.0.1:8080 and point the API field at http://127.0.0.1:8741. Development CORS allows that origin plus `https://nustanakritwithai.github.io`.
 
-The Admin Control Center is a separate page at http://127.0.0.1:8080/admin/ (on GitHub Pages: `…/Server-Manager-/admin/`). It reads the same `web/config.js` API URL as the game client. The operator types `X-Admin-Token` into the page. By default it stays in memory for that tab. Selecting **Remember token on this device** saves it in this browser profile’s `localStorage` and loads it automatically on later visits. Use **Clear token** to remove it. The page calls the admin API and shows the response. Snapshot restore is select, inspect, warning, typed snapshot id, then `POST` with `confirm: true`. World mutation stays on the server.
+The Admin Control Center is a separate page at http://127.0.0.1:8080/admin/ (on GitHub Pages: `…/Server-Manager-/admin/`). It reads the same `web/config.js` API URL as the game client. Sign in with the admin password. The username field is only there so a password manager can save the login; the server ignores it and checks the password. **Stay signed in on this device** is on by default and stores only the expiring session token (`simcore.adminSession`), not the password. Uncheck it to keep that token in memory for the tab. The page shows when the session expires. **Log out** calls `POST /v1/admin/logout` and drops the token. The old `X-Admin-Token` field is under **Advanced: X-Admin-Token**. **Remember token on this device** there is unchecked by default; Connect writes `simcore.adminToken` only when it is checked, and **Clear token** removes it. Neither value is written to `sessionStorage`, cookies, the URL, or the console. Pasted tokens and passwords drop surrounding spaces, line breaks, non-breaking spaces, and zero-width characters before they are used. GitHub Pages localStorage is per-origin (`https://nustanakritwithai.github.io`), so any other Pages site under the same account can read a remembered token or a saved session: only enable either option on a trusted personal device. The page calls the admin API and shows the response. Snapshot restore is select, inspect, warning, typed snapshot id, then `POST` with `confirm: true`. World mutation stays on the server.
+
+### Admin password on the VPS
+
+The API stores a scrypt hash in `SIMCORE_ADMIN_PASSWORD_HASH` and signs session tokens with `SIMCORE_ADMIN_SESSION_SECRET`. The password itself is not stored. `POST /v1/admin/login` returns a bearer token that lasts about 30 days (`SIMCORE_ADMIN_SESSION_TTL_SECONDS`, default `2592000`). Admin routes accept that bearer token or the existing `X-Admin-Token`. Login stays off until the hash is set. In production the whole admin API, including login, stays off unless `SIMCORE_ENABLE_ADMIN=true`.
+
+After this change is on `main`, on the VPS in an elevated PowerShell:
+
+```powershell
+cd C:\simcore\app
+powershell -ExecutionPolicy Bypass -File C:\simcore\app\deploy\windows\update.ps1
+powershell -ExecutionPolicy Bypass -File C:\simcore\app\deploy\windows\set-admin-password.ps1
+```
+
+`update.ps1` pulls `main`, installs, migrates, and restarts the services. `set-admin-password.ps1` asks for the password twice with `Read-Host -AsSecureString`, hashes it with `C:\simcore\app\.venv\Scripts\python.exe`, writes the hash into `C:\simcore\app\.env.prod` (UTF-8, no BOM, other lines left as they are, previous file backed up beside it), generates `SIMCORE_ADMIN_SESSION_SECRET` when that line is missing, increases `SIMCORE_ADMIN_SESSION_VERSION`, and restarts the `simcore-api` service. It does not print the password, the hash, or the session secret. Confirm `SIMCORE_ENABLE_ADMIN=true` is already in that file; the script does not change that line.
+
+Then open https://nustanakritwithai.github.io/Server-Manager-/admin/ and sign in. The Pages workflow publishes the form when `main` updates.
+
+To sign every browser out, either:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\simcore\app\deploy\windows\set-admin-password.ps1 -Revoke
+```
+
+or call `POST /v1/admin/sessions/revoke` with a bearer session or `X-Admin-Token`. `-Revoke` increases `SIMCORE_ADMIN_SESSION_VERSION` and restarts the API, so old session tokens stay invalid after a reboot. The HTTP revoke bumps an in-process counter and lasts until `simcore-api` restarts. Replacing `SIMCORE_ADMIN_SESSION_SECRET` and restarting the API also invalidates every session. `POST /v1/admin/logout` revokes only the session that called it. The static `X-Admin-Token` is not a session; rotate `SIMCORE_ADMIN_TOKEN` to retire it. Failed sign-ins are limited per client address (8 failures in 15 minutes by default). Caddy’s loopback proxy is the only peer whose `X-Forwarded-For` is trusted.
 
 ## Deploy on the Windows VPS
 
@@ -274,6 +298,7 @@ The space after `obj=` is required. LocalSystem is what lets the job restart the
 | Public API origin | `web/config.js` key `apiBaseUrl`, and the URL field in the page | `https://157-85-96-139.sslip.io` |
 | `API_DOMAIN` | `C:\simcore\app\.env.prod` (created by bootstrap, not committed) | `157-85-96-139.sslip.io` |
 | Database password and `SIMCORE_ADMIN_TOKEN` | the same `.env.prod` | generated on the server; do not copy them into GitHub |
+| `SIMCORE_ADMIN_PASSWORD_HASH`, `SIMCORE_ADMIN_SESSION_SECRET`, `SIMCORE_ADMIN_SESSION_VERSION` | the same `.env.prod`, written by `set-admin-password.ps1` | hash and HMAC secret; the password is not stored |
 | Runner registration token | `config.cmd` only, from the GitHub runners page | one-time; do not commit it |
 
 No repository secret is required for deploy. There is no SSH key.

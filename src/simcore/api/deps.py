@@ -7,6 +7,7 @@ from fastapi import Depends, Header, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
+from simcore.admin_auth import AdminSessionBook, read_admin_session, secrets_equal
 from simcore.auth import parse_dev_token
 from simcore.clock import OffsetClock
 from simcore.config import Settings
@@ -49,10 +50,18 @@ def get_current_player(
 def require_admin(
     request: Request,
     x_admin_token: Annotated[str | None, Header()] = None,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)] = None,
 ) -> Settings:
     settings: Settings = request.app.state.settings
     if not settings.admin_enabled:
         raise GameError("admin API is disabled", status_code=404, code="not_found")
-    if not x_admin_token or x_admin_token != settings.admin_token:
-        raise GameError("invalid admin token", status_code=401, code="unauthorized")
-    return settings
+    book: AdminSessionBook = request.app.state.admin_sessions
+    bearer = ""
+    if credentials is not None and credentials.scheme.lower() == "bearer":
+        bearer = credentials.credentials or ""
+    if bearer and read_admin_session(bearer, settings, book) is not None:
+        return settings
+    header = x_admin_token or ""
+    if header and secrets_equal(header, settings.admin_token):
+        return settings
+    raise GameError("invalid admin token", status_code=401, code="unauthorized")

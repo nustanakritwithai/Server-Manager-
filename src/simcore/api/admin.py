@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from simcore.api.admin_login import router as admin_login_router
 from simcore.api.deps import get_clock, get_session, require_admin
 from simcore.api.inspect import (
     army_detail,
@@ -32,6 +33,7 @@ from simcore.api.snapshots import router as snapshot_router
 from simcore.worker import run_once
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
+router.include_router(admin_login_router)
 router.include_router(snapshot_router)
 
 
