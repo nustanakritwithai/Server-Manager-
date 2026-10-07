@@ -249,13 +249,79 @@ function Expand-ApacheDefinedPath {
     return $expanded
 }
 
+function Test-ApacheAbsolutePath {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    $text = $Path.Trim().Trim('"')
+    if ($text -match '^[A-Za-z]:[\\/]') { return $true }
+    if ($text -match '^[\\/]{2}[^\\/]') { return $true }
+    # XAMPP's compiled HTTPD_ROOT is /apache. On Windows that is printed as \apache.
+    # A single leading slash is not an install directory.
+    $unix = ($text -replace '\\', '/').TrimEnd('/')
+    if ($unix -eq '/apache' -or $unix.StartsWith('/apache/')) { return $false }
+    if ($text.StartsWith('/')) { return $true }
+    return $false
+}
+
+function Get-ApacheExecutableRoot {
+    param([string]$Executable)
+    if ([string]::IsNullOrWhiteSpace($Executable)) { return "" }
+    $bin = Split-Path -Parent $Executable
+    if ([string]::IsNullOrWhiteSpace($bin)) { return "" }
+    if ((Split-Path -Leaf $bin) -eq "bin") {
+        $parent = Split-Path -Parent $bin
+        if (-not [string]::IsNullOrWhiteSpace($parent)) { return $parent }
+    }
+    return $bin
+}
+
+function Resolve-ApacheInstallPaths {
+    param(
+        [string]$Executable,
+        [string]$ReportedRoot,
+        [string]$ReportedConfig
+    )
+    $fromExe = Get-ApacheExecutableRoot -Executable $Executable
+    $reported = ([string]$ReportedRoot).Trim().Trim('"')
+    $root = ""
+    if (Test-ApacheAbsolutePath $reported) {
+        $slash = [System.IO.Path]::DirectorySeparatorChar
+        $candidate = [System.IO.Path]::GetFullPath(($reported -replace '[\\/]', $slash))
+        if (Test-Path -LiteralPath $candidate) { $root = $candidate }
+    }
+    if (-not $root) {
+        if ([string]::IsNullOrWhiteSpace($fromExe) -or -not (Test-Path -LiteralPath $fromExe)) {
+            throw "httpd -V reported ServerRoot '$reported', which is not a usable absolute directory, and httpd.exe is not inside an install folder."
+        }
+        $root = [System.IO.Path]::GetFullPath($fromExe)
+    }
+    $config = ([string]$ReportedConfig).Trim().Trim('"')
+    if ([string]::IsNullOrWhiteSpace($config)) { $config = "conf/httpd.conf" }
+    return [pscustomobject]@{
+        ServerRoot = $root
+        ConfigFile = $config
+        ReportedRoot = $reported
+        UsedExecutableRoot = ($root -eq [System.IO.Path]::GetFullPath($fromExe))
+    }
+}
+
 function Join-ApacheServerPath {
     param([string]$ServerRoot, [string]$Relative)
-    $slash = [System.IO.Path]::DirectorySeparatorChar
-    $normalized = $Relative -replace '[\\/]', $slash
-    if ([System.IO.Path]::IsPathRooted($normalized)) {
-        return [System.IO.Path]::GetFullPath($normalized)
+    if ([string]::IsNullOrWhiteSpace($ServerRoot) -or -not (Test-ApacheAbsolutePath $ServerRoot)) {
+        throw "Apache ServerRoot '$ServerRoot' is not an absolute directory."
     }
+    $slash = [System.IO.Path]::DirectorySeparatorChar
+    $relativeText = ([string]$Relative).Trim().Trim('"')
+    if (Test-ApacheAbsolutePath $relativeText) {
+        $absolute = $relativeText -replace '[\\/]', $slash
+        if ($absolute -match '[\*\?]') { return $absolute }
+        return [System.IO.Path]::GetFullPath($absolute)
+    }
+    $unix = $relativeText -replace '\\', '/'
+    if ($unix -eq '/apache') { $unix = "" }
+    elseif ($unix.StartsWith('/apache/')) { $unix = $unix.Substring('/apache/'.Length) }
+    $unix = $unix.TrimStart('/')
+    $normalized = $unix -replace '/', $slash
     $combined = $ServerRoot
     foreach ($part in ($normalized.Split($slash))) {
         if ($part -eq "" -or $part -eq ".") { continue }
@@ -658,21 +724,31 @@ function Find-ApacheInstall {
     if (-not $exe -or -not (Test-Path -LiteralPath $exe)) {
         throw "Apache (httpd.exe) was not found as a Windows service, a running process, or under C:\xampp, C:\Apache24, or Program Files. Install path detection stopped rather than guessing."
     }
-    $versionOutput = & $exe -V 2>&1 | Out-String
+    $versionOutput = ""
     $serverRoot = ""
     $configFile = ""
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $versionOutput = & $exe -V 2>&1 | Out-String
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
     if ($versionOutput -match 'HTTPD_ROOT="([^"]+)"') { $serverRoot = $Matches[1] }
     if ($versionOutput -match 'SERVER_CONFIG_FILE="([^"]+)"') { $configFile = $Matches[1] }
-    if (-not $serverRoot -or -not $configFile) {
-        throw "httpd -V did not report HTTPD_ROOT and SERVER_CONFIG_FILE.`n$versionOutput"
+    $paths = Resolve-ApacheInstallPaths -Executable $exe -ReportedRoot $serverRoot -ReportedConfig $configFile
+    if ($paths.ReportedRoot -and -not (Test-ApacheAbsolutePath $paths.ReportedRoot)) {
+        Write-Host "httpd -V reported ServerRoot '$($paths.ReportedRoot)', which is not an absolute directory. Using $($paths.ServerRoot) from httpd.exe."
     }
-    $serverRoot = $serverRoot -replace '/', '\'
-    $configFile = $configFile -replace '/', '\'
+    $mainConfig = Join-ApacheServerPath -ServerRoot $paths.ServerRoot -Relative $paths.ConfigFile
+    if (-not (Test-Path -LiteralPath $mainConfig)) {
+        throw "No readable Apache configuration was found at $mainConfig. httpd -V reported ServerRoot '$serverRoot' and SERVER_CONFIG_FILE '$configFile'."
+    }
     return [pscustomobject]@{
         Executable = $exe
         ServiceName = $serviceName
-        ServerRoot = $serverRoot
-        ConfigFile = $configFile
+        ServerRoot = $paths.ServerRoot
+        ConfigFile = $mainConfig
         VersionOutput = $versionOutput.Trim()
     }
 }

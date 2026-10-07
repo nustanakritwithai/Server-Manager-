@@ -184,6 +184,42 @@ $srv = $root -replace '\\', '/'
 Set-Content -LiteralPath $ssl -Value "Listen 443" -Encoding utf8
 Set-Content -LiteralPath $vhost -Value "Listen 9" -Encoding utf8
 Set-Content -LiteralPath $enabled -Value "Listen 8080" -Encoding utf8
+Assert-True "backslash apache root is not absolute" (-not (Test-ApacheAbsolutePath '\apache'))
+Assert-True "slash apache root is not absolute" (-not (Test-ApacheAbsolutePath '/apache'))
+Assert-True "slash apache child is not absolute" (-not (Test-ApacheAbsolutePath '/apache/conf/httpd.conf'))
+Assert-True "drive apache root is absolute" (Test-ApacheAbsolutePath 'C:\xampp\apache')
+Assert-True "drive slash apache root is absolute" (Test-ApacheAbsolutePath 'C:/xampp/apache')
+$xampp = Join-Path ([System.IO.Path]::GetTempPath()) ("simcore-xampp-" + [guid]::NewGuid().ToString("N"))
+$xamppConf = Join-Path $xampp "conf"
+$xamppExtra = Join-Path $xamppConf "extra"
+New-Item -ItemType Directory -Force -Path $xamppExtra | Out-Null
+$xamppMain = Join-Path $xamppConf "httpd.conf"
+$xamppSsl = Join-Path $xamppExtra "httpd-ssl.conf"
+@(
+    'Define SRVROOT "/apache"',
+    'ServerRoot "${SRVROOT}"',
+    'Listen 80',
+    'Include conf/extra/httpd-ssl.conf',
+    'Include "${SRVROOT}/conf/extra/httpd-ssl.conf"'
+) | Set-Content -LiteralPath $xamppMain -Encoding utf8
+Set-Content -LiteralPath $xamppSsl -Value "Listen 443" -Encoding utf8
+$xamppExe = Join-Path (Join-Path $xampp "bin") "httpd.exe"
+$resolved = Resolve-ApacheInstallPaths -Executable $xamppExe -ReportedRoot '\apache' -ReportedConfig 'conf\httpd.conf'
+Assert-Equal "xampp server root from httpd.exe" $resolved.ServerRoot ([System.IO.Path]::GetFullPath($xampp))
+$xamppClosure = @(Get-ApacheConfigClosure -ServerRoot $resolved.ServerRoot -MainConfig $resolved.ConfigFile)
+$xamppLeaves = @($xamppClosure | ForEach-Object { Split-Path -Leaf $_ } | Sort-Object -Unique)
+Assert-Equal "xampp closure" ($xamppLeaves -join ",") "httpd-ssl.conf,httpd.conf"
+Assert-Equal "placeholder include joins install root" (Join-ApacheServerPath -ServerRoot $resolved.ServerRoot -Relative '\apache\conf\extra\httpd-ssl.conf') ([System.IO.Path]::GetFullPath($xamppSsl))
+Assert-Equal "slash placeholder include joins install root" (Join-ApacheServerPath -ServerRoot $resolved.ServerRoot -Relative '/apache/conf/extra/httpd-ssl.conf') ([System.IO.Path]::GetFullPath($xamppSsl))
+$xamppMainText = [System.IO.File]::ReadAllText($xamppMain)
+$xamppSslText = [System.IO.File]::ReadAllText($xamppSsl)
+Assert-True "xampp http listens on 8080" ((Update-ApacheBindingText $xamppMainText).Contains("Listen 127.0.0.1:8080"))
+Assert-True "xampp ssl listens on 8443" ((Update-ApacheBindingText $xamppSslText).Contains("Listen 127.0.0.1:8443"))
+$reportedRoot = ([System.IO.Path]::GetFullPath($xampp)) -replace '\\', '/'
+$fromVersion = Resolve-ApacheInstallPaths -Executable $xamppExe -ReportedRoot $reportedRoot -ReportedConfig 'conf/httpd.conf'
+Assert-Equal "real httpd -V root is kept" $fromVersion.ServerRoot ([System.IO.Path]::GetFullPath($xampp))
+Remove-Item -LiteralPath $xampp -Recurse -Force
+
 $closure = @(Get-ApacheConfigClosure -ServerRoot $root -MainConfig (Join-Path "conf" "httpd.conf"))
 $leaves = @($closure | ForEach-Object { Split-Path -Leaf $_ } | Sort-Object)
 Assert-Equal "closure files" ($leaves -join ",") "httpd-ssl.conf,httpd.conf,one.conf"
