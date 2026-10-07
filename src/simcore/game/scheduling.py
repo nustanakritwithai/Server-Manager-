@@ -12,6 +12,7 @@ from simcore.errors import GameError
 from simcore.game.combat import UnitStack
 from simcore.game.travel import travel_seconds
 from simcore.models import Army, Event, Movement
+from simcore.world import bump_world_version
 
 
 def schedule_movement(
@@ -91,4 +92,5 @@ def schedule_movement(
         session.flush()
     except IntegrityError as exc:
         raise GameError("duplicate event", status_code=409, code="conflict") from exc
+    bump_world_version(session)
     return movement, event

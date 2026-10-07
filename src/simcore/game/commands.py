@@ -22,6 +22,7 @@ from simcore.game.locks import lock_armies, lock_cities
 from simcore.game.scheduling import schedule_movement
 from simcore.game.travel import distance, interpolate, travel_progress
 from simcore.models import Army, City, Event, Movement, Player
+from simcore.world import bump_world_version, require_commands_open
 
 
 def _owned_army(session: Session, player: Player, army_id: int) -> Army:
@@ -54,6 +55,7 @@ def move_army(
     relocate=True also changes the army's home city on arrival.
     """
 
+    require_commands_open(session)
     peeked = _owned_army(session, player, army_id)
     _require_garrisoned(peeked)
     cities = lock_cities(session, peeked.location_city_id, destination_city_id)
@@ -97,6 +99,7 @@ def attack_city(
     target_city_id: int,
     now: datetime,
 ) -> tuple[Movement, Event]:
+    require_commands_open(session)
     peeked = _owned_army(session, player, army_id)
     _require_garrisoned(peeked)
     if peeked.location_city_id == target_city_id:
@@ -141,6 +144,7 @@ def attack_city(
 def recall_army(session: Session, player: Player, army_id: int, now: datetime) -> tuple[Movement, Event]:
     """Turn a marching army around, or send a reinforced army back to its home city."""
 
+    require_commands_open(session)
     peeked = _owned_army(session, player, army_id)
     if peeked.status == ArmyStatus.DESTROYED:
         raise GameError("that army has been destroyed", status_code=409, code="conflict")
@@ -241,6 +245,7 @@ def recall_army(session: Session, player: Player, army_id: int, now: datetime) -
         )
         session.add(event)
         session.flush()
+        bump_world_version(session)
         return movement, event
 
     stacks = payload_to_stacks(army.units)
@@ -263,6 +268,7 @@ def recall_army(session: Session, player: Player, army_id: int, now: datetime) -
 
 
 def queue_build(session: Session, player: Player, city_id: int, building: str, now: datetime) -> Event:
+    require_commands_open(session)
     if building not in BUILDINGS:
         raise GameError(f"unknown building {building}", code="invalid_command")
     cities = lock_cities(session, city_id)
@@ -280,10 +286,12 @@ def queue_build(session: Session, player: Player, city_id: int, building: str, n
     )
     session.add(event)
     session.flush()
+    bump_world_version(session)
     return event
 
 
 def queue_research(session: Session, player: Player, tech: str, now: datetime) -> Event:
+    require_commands_open(session)
     if tech not in RESEARCH:
         raise GameError(f"unknown research {tech}", code="invalid_command")
     event = Event(
@@ -297,4 +305,5 @@ def queue_research(session: Session, player: Player, tech: str, now: datetime) -
     )
     session.add(event)
     session.flush()
+    bump_world_version(session)
     return event

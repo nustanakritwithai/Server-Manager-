@@ -33,6 +33,7 @@ from simcore.game.ledger import apply_resource_delta
 from simcore.game.locks import lock_armies, lock_cities
 from simcore.game.scheduling import schedule_movement
 from simcore.models import Army, BattleReport, City, Event, Movement, Player, Transaction
+from simcore.world import bump_world_version
 
 
 def battle_seed(event_id: int, movement_id: int) -> int:
@@ -64,6 +65,7 @@ def process_event(session: Session, event: Event, now: datetime) -> None:
     event.processed_at = now
     event.last_error = None
     session.flush()
+    bump_world_version(session)
 
 
 def _process_army_arrive(session: Session, event: Event, now: datetime) -> None:

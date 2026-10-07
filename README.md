@@ -84,8 +84,36 @@ Useful admin and CLI entry points:
 | Run one event now | `POST /v1/admin/events/{id}/run` | `simcore-cli run-event --id 1` |
 | Ledger | `GET /v1/admin/transactions` | `simcore-cli ledger` |
 | Drain due events | `POST /v1/admin/worker/tick` | `python -m simcore.worker --once` |
+| Create a world snapshot | `POST /v1/admin/snapshots` | |
+| List / inspect snapshots | `GET /v1/admin/snapshots`, `GET /v1/admin/snapshots/{id}/inspect` | |
+| Restore a snapshot | `POST /v1/admin/snapshots/{id}/restore` | |
 
 Admin routes are on unless `SIMCORE_ENV=production`. In production set `SIMCORE_ENABLE_ADMIN=1` to turn them back on.
+
+## World snapshots
+
+A snapshot is a checksummed copy of the simulation used to debug, replay, test, or roll the world back. It is not a database backup: it does not dump roles, files, or anything outside the game tables, and it is not a disaster-recovery tool. `pg_dump` / point-in-time recovery stays a separate job.
+
+`POST /v1/admin/snapshots` (reason `MANUAL` by default) writes one row plus a canonical JSON payload. Restore is `POST /v1/admin/snapshots/{id}/restore` with `{"confirm": true}`. The server does not apply the payload blindly:
+
+1. Stop accepting player commands.
+2. Pause the worker and wait until it is not processing an event.
+3. Write a `SAFETY` snapshot of the current world.
+4. Verify the target is `READY` and its stored checksum matches the payload.
+5. Replace the simulation rows in one transaction.
+6. Recompute the checksum and roll back if it does not match.
+7. Start the worker.
+8. Accept player commands again.
+
+If a step fails before that replacement commits, the previous world is still there and commands are opened again when it still matches the safety snapshot. The checksum is `sha256:` plus the SHA-256 of a canonical JSON document. Create and restore use the same function. Details, the covered tables, and the operator escape hatch are in [docs/SNAPSHOTS.md](docs/SNAPSHOTS.md).
+
+```bash
+curl -s -X POST http://127.0.0.1:8741/v1/admin/snapshots \
+  -H 'content-type: application/json' -H 'x-admin-token: dev-admin' -d '{"reason":"MANUAL"}'
+
+curl -s -X POST http://127.0.0.1:8741/v1/admin/snapshots/1/restore \
+  -H 'content-type: application/json' -H 'x-admin-token: dev-admin' -d '{"confirm":true}'
+```
 
 ## Run without Docker
 
@@ -279,6 +307,7 @@ The suite covers:
 - The vertical slice over HTTP: attack, ETA, fast-forward, worker tick, battle report, return home, resource totals, and a second pass that changes nothing.
 - A worker crash before commit, then a retry, then a forced replay: loot is applied once.
 - `SELECT … FOR UPDATE SKIP LOCKED` so two workers claim different events.
+- World snapshots: create, tamper rejection, and snapshot → mutate (march, battle, losses, ledger) → restore with `hash(before) == hash(restored)`. Run that proof with `pytest tests/test_snapshots.py::test_snapshot_mutate_restore_hash_equality`.
 
 ## Layout
 
@@ -295,7 +324,10 @@ src/simcore/
   game/processor.py       arrival, return, build, research
   game/queue.py           SKIP LOCKED claim
   game/ledger.py          transactions + idempotency keys
+  snapshot.py             world capture, checksum, safe restore
+  world.py                world_version and maintenance gates
 docs/GAME_RULES.md        the rules this server enforces
+docs/SNAPSHOTS.md         snapshot vs backup, checksum, restore sequence
 alembic/                  schema migrations
 docker-compose.yml        local Postgres + API + worker
 web/                      static client for GitHub Pages
@@ -310,7 +342,8 @@ deploy/windows/           VPS bootstrap, Apache coexistence, update, and Caddy e
 ## Left for later
 
 - Real authentication and sessions
-- Backups and point-in-time recovery
+- Disaster-recovery backups (`pg_dump` / point-in-time recovery). Snapshots roll the simulation back; they are not a substitute. See [docs/SNAPSHOTS.md](docs/SNAPSHOTS.md).
+- Admin UI for snapshots (Phase 3). The HTTP API is in place; there is no `/admin` page yet.
 - Monitoring and metrics
 - A full dead-letter workflow for failed events (this MVP marks an event `failed` after 5 attempts so one poison row cannot block the queue)
 - Rate limiting

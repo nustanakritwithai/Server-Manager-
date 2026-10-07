@@ -29,12 +29,21 @@ class Base(DeclarativeBase):
 
 
 class WorldState(Base):
-    """Singleton row (id = 1). offset_seconds is added to the process clock."""
+    """Singleton row (id = 1). offset_seconds is added to the process clock.
+
+    world_version increments when the simulation changes. commands_open,
+    worker_paused, and restore_active are operational gates used by snapshot
+    restore; they are not part of the world checksum.
+    """
 
     __tablename__ = "world_state"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     offset_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    world_version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    commands_open: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    worker_paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    restore_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
 class Player(Base):
@@ -185,3 +194,46 @@ class Transaction(Base):
     source_event_id: Mapped[int | None] = mapped_column(ForeignKey("events.id"), nullable=True, index=True)
     idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class WorldSnapshot(Base):
+    """Metadata for one captured world. The payload lives in world_snapshot_payloads.
+
+    A snapshot is a simulation rollback point. It is not a database backup.
+    """
+
+    __tablename__ = "world_snapshots"
+    __table_args__ = (
+        CheckConstraint(
+            "reason IN ('AUTO', 'MANUAL', 'SAFETY')",
+            name="ck_snapshot_reason",
+        ),
+        CheckConstraint(
+            "status IN ('CREATING', 'READY', 'FAILED', 'RESTORING')",
+            name="ck_snapshot_status",
+        ),
+        Index("ix_world_snapshots_created_at", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    world_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    world_version: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    checksum: Mapped[str] = mapped_column(String(80), nullable=False)
+    reason: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    summary: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class WorldSnapshotPayload(Base):
+    """Canonical JSON document whose SHA-256 is world_snapshots.checksum."""
+
+    __tablename__ = "world_snapshot_payloads"
+
+    snapshot_id: Mapped[int] = mapped_column(
+        ForeignKey("world_snapshots.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    body: Mapped[str] = mapped_column(Text, nullable=False)

@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from simcore.constants import EventStatus
 from simcore.errors import GameError
 from simcore.game.processor import process_event
-from simcore.models import Event
+from simcore.models import Event, WorldState
 
 
 def claim_one(session: Session, now: datetime, *, worker_id: str = "worker") -> Event | None:
@@ -44,6 +44,9 @@ def process_due_events(session: Session, now: datetime, *, limit: int = 50, work
     they are already due.
     """
 
+    state = session.get(WorldState, 1)
+    if state is not None and state.worker_paused:
+        raise GameError("worker is paused for snapshot restore", status_code=409, code="maintenance")
     processed: list[int] = []
     for _ in range(limit):
         event = claim_one(session, now, worker_id=worker_id)
@@ -62,6 +65,9 @@ def run_event_now(session: Session, event_id: int, now: datetime, *, worker_id: 
         raise GameError("event not found", status_code=404, code="not_found")
     if event.status in (EventStatus.COMPLETED, EventStatus.CANCELLED):
         return event
+    state = session.get(WorldState, 1)
+    if state is not None and state.worker_paused:
+        raise GameError("worker is paused for snapshot restore", status_code=409, code="maintenance")
     event.status = EventStatus.PROCESSING
     event.attempts += 1
     event.locked_at = now

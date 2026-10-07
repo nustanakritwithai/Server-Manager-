@@ -13,9 +13,11 @@ from simcore.config import Settings
 from simcore.game.queue import run_event_now
 from simcore.models import Army, Event, Transaction
 from simcore.present import army_body
+from simcore.api.snapshots import router as snapshot_router
 from simcore.worker import run_once
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
+router.include_router(snapshot_router)
 
 
 class AdvanceIn(BaseModel):
@@ -136,9 +138,13 @@ def worker_tick(
 
     processed: list[int] = []
     failed: list[int] = []
+    paused = False
     base = request.app.state.base_clock
     for _ in range(limit):
         status, event_id = run_once(base)
+        if status == "paused":
+            paused = True
+            break
         if status == "empty":
             break
         if status == "processed" and event_id is not None:
@@ -148,6 +154,7 @@ def worker_tick(
     return {
         "processed": len(processed),
         "failed": len(failed),
+        "paused": paused,
         "event_ids": processed,
         "failed_ids": failed,
     }
