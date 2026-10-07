@@ -30,6 +30,7 @@ from simcore.backup import (
     drill_database,
     drill_session,
     drop_database,
+    ledger_failures,
     dump_fits,
     evaluate_backup_status,
     libpq_parts,
@@ -48,7 +49,7 @@ from simcore.backup import (
 from simcore.config import Settings, get_settings
 from simcore.constants import SnapshotReason
 from simcore.db import get_sessionmaker
-from simcore.models import City, Transaction, WorldSnapshotPayload
+from simcore.models import City, Player, Transaction, WorldSnapshotPayload
 from simcore.monitoring import UNKNOWN, collect_report
 from simcore.snapshot import create_snapshot
 from tests.conftest import ADMIN
@@ -375,6 +376,93 @@ def test_drill_reports_a_broken_ledger_chain(db) -> None:
         ledger = next(item for item in report["checks"] if item["name"] == "ledger_conservation")
         assert ledger["ok"] is False
         assert "wood" in ledger["detail"]
+    finally:
+        session.close()
+
+
+def test_ledger_failures_accepts_effect_rows_and_rejects_an_unknown_resource(db) -> None:
+    """Train, build, and research rows are real ledger effects, not unknown resources.
+
+    A restore drill used to fail a healthy world because those rows are not
+    wood, food, iron, or gold. City stocks, building levels, and research
+    levels are still compared to the last balance. A name outside those
+    forms is still a failure.
+    """
+
+    from sqlalchemy.orm.attributes import flag_modified
+
+    create_scenario(_now())
+    session = _session()
+    try:
+        city = session.scalars(select(City).order_by(City.id)).first()
+        assert city is not None
+        player = session.get(Player, city.player_id)
+        assert player is not None
+        city.buildings = {"lumber_camp": 1}
+        flag_modified(city, "buildings")
+        player.research = {"forestry": 1}
+        flag_modified(player, "research")
+        when = _now()
+        session.add_all(
+            [
+                Transaction(
+                    player_id=player.id,
+                    city_id=city.id,
+                    resource="unit:militia",
+                    delta=1,
+                    balance_after=41,
+                    reason="train_units",
+                    idempotency_key="ledger-effect-unit",
+                    created_at=when,
+                ),
+                Transaction(
+                    player_id=player.id,
+                    city_id=city.id,
+                    resource="building:lumber_camp",
+                    delta=1,
+                    balance_after=1,
+                    reason="build",
+                    idempotency_key="ledger-effect-building",
+                    created_at=when,
+                ),
+                Transaction(
+                    player_id=player.id,
+                    city_id=None,
+                    resource="research:forestry",
+                    delta=1,
+                    balance_after=1,
+                    reason="research",
+                    idempotency_key="ledger-effect-research",
+                    created_at=when,
+                ),
+            ]
+        )
+        session.commit()
+        assert ledger_failures(session) == []
+
+        city.buildings = {"lumber_camp": 0}
+        flag_modified(city, "buildings")
+        session.commit()
+        mismatched = ledger_failures(session)
+        assert any("building:lumber_camp" in item for item in mismatched)
+
+        city.buildings = {"lumber_camp": 1}
+        flag_modified(city, "buildings")
+        session.add(
+            Transaction(
+                player_id=player.id,
+                city_id=city.id,
+                resource="not_a_resource",
+                delta=1,
+                balance_after=1,
+                reason="production",
+                idempotency_key="ledger-effect-unknown",
+                created_at=when,
+            )
+        )
+        session.commit()
+        unknown = ledger_failures(session)
+        assert any("unknown resource not_a_resource" in item for item in unknown)
     finally:
         session.close()
 

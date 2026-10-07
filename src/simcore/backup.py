@@ -29,7 +29,7 @@ from sqlalchemy.engine.url import URL
 from sqlalchemy.orm import Session
 
 from simcore.constants import RESOURCES, SnapshotStatus
-from simcore.models import City, WorldSnapshot
+from simcore.models import City, Player, WorldSnapshot
 from simcore.snapshot import inspect_snapshot, world_checksum
 
 STATUS_SCHEMA = 1
@@ -731,39 +731,50 @@ def collect_facts(session: Session) -> dict[str, Any]:
 
 
 def ledger_failures(session: Session) -> list[str]:
-    """The ledger chain for each city and resource, checked against the city column.
+    """City stocks, building levels, and research levels against the ledger.
 
-    An empty ledger is consistent. A broken chain or a last balance that does
-    not match the city is not.
+    ``wood``, ``food``, ``iron``, and ``gold`` are checked against the city
+    column. ``building:<name>`` is checked against ``cities.buildings``.
+    ``research:<name>`` is checked against ``players.research``. ``unit:<type>``
+    rows record an army's count, not a city stock, so they are not compared to
+    a city column. Any other resource name is a failure. An empty ledger is
+    consistent. A broken chain or a last balance that does not match the
+    stored counter is not.
     """
 
     rows = session.execute(
         text(
-            "SELECT id, city_id, resource, delta, balance_after "
+            "SELECT id, player_id, city_id, resource, delta, balance_after "
             "FROM transactions ORDER BY id"
         )
     ).all()
-    grouped: dict[tuple[int | None, str], list[Any]] = defaultdict(list)
+    stocks: dict[tuple[int | None, str], list[Any]] = defaultdict(list)
+    buildings: dict[tuple[int, str], list[Any]] = defaultdict(list)
+    research: dict[tuple[int, str], list[Any]] = defaultdict(list)
     failures: list[str] = []
     for row in rows:
         resource = str(row.resource)
-        if resource not in RESOURCES:
-            failures.append(f"transaction {row.id} uses unknown resource {resource}")
-            continue
         if int(row.balance_after) < 0:
             failures.append(f"transaction {row.id} has a negative balance_after")
-        grouped[(None if row.city_id is None else int(row.city_id), resource)].append(row)
-    for (city_id, resource), chain in grouped.items():
-        previous: int | None = None
-        for row in chain:
-            balance = int(row.balance_after)
-            delta = int(row.delta)
-            if previous is not None and previous + delta != balance:
-                failures.append(
-                    f"city {city_id} {resource}: transaction {row.id} balance_after {balance} "
-                    f"!= previous {previous} + delta {delta}"
-                )
-            previous = balance
+        kind = _effect_kind(resource)
+        if resource in RESOURCES:
+            stocks[(None if row.city_id is None else int(row.city_id), resource)].append(row)
+        elif kind == "building":
+            if row.city_id is None:
+                failures.append(f"transaction {row.id} building effect has no city")
+            else:
+                buildings[(int(row.city_id), resource)].append(row)
+        elif kind == "research":
+            if row.player_id is None:
+                failures.append(f"transaction {row.id} research effect has no player")
+            else:
+                research[(int(row.player_id), resource)].append(row)
+        elif kind == "unit":
+            continue
+        else:
+            failures.append(f"transaction {row.id} uses unknown resource {resource}")
+    for (city_id, resource), chain in stocks.items():
+        previous = _chain_balance(failures, chain, label=f"city {city_id} {resource}")
         if city_id is None or previous is None:
             continue
         city = session.get(City, city_id)
@@ -775,7 +786,56 @@ def ledger_failures(session: Session) -> list[str]:
             failures.append(
                 f"city {city_id} {resource}: column {current} != last ledger balance_after {previous}"
             )
+    for (city_id, resource), chain in buildings.items():
+        previous = _chain_balance(failures, chain, label=f"city {city_id} {resource}")
+        if previous is None:
+            continue
+        city = session.get(City, city_id)
+        if city is None:
+            failures.append(f"transaction refers to missing city {city_id}")
+            continue
+        name = resource.split(":", 1)[1]
+        current = int((city.buildings or {}).get(name, 0))
+        if current != previous:
+            failures.append(
+                f"city {city_id} {resource}: level {current} != last ledger balance_after {previous}"
+            )
+    for (player_id, resource), chain in research.items():
+        previous = _chain_balance(failures, chain, label=f"player {player_id} {resource}")
+        if previous is None:
+            continue
+        player = session.get(Player, player_id)
+        if player is None:
+            failures.append(f"transaction refers to missing player {player_id}")
+            continue
+        name = resource.split(":", 1)[1]
+        current = int((player.research or {}).get(name, 0))
+        if current != previous:
+            failures.append(
+                f"player {player_id} {resource}: level {current} != last ledger balance_after {previous}"
+            )
     return failures
+
+
+def _effect_kind(resource: str) -> str | None:
+    kind, separator, name = resource.partition(":")
+    if separator and name and kind in {"unit", "building", "research"}:
+        return kind
+    return None
+
+
+def _chain_balance(failures: list[str], chain: list[Any], *, label: str) -> int | None:
+    previous: int | None = None
+    for row in chain:
+        balance = int(row.balance_after)
+        delta = int(row.delta)
+        if previous is not None and previous + delta != balance:
+            failures.append(
+                f"{label}: transaction {row.id} balance_after {balance} "
+                f"!= previous {previous} + delta {delta}"
+            )
+        previous = balance
+    return previous
 
 
 def _check(name: str, ok: bool, detail: str, *, required: bool = True) -> dict[str, Any]:

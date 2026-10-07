@@ -31,6 +31,7 @@ from simcore.load.scenarios import (
     RunContext,
     check_failure_server_errors,
     check_load_errors,
+    _REQUIRED_ROUTES,
     check_route_mix,
     refresh_views,
     run_mixed_load,
@@ -440,7 +441,7 @@ def _shell(
             "command_rate_limit_in_child": 1000 if config.mode == "local" else None,
         },
         "checks": checks,
-        "load": summarize(load_rows, elapsed_seconds=load_elapsed, target_rps=config.rate),
+        "load": _with_missing_routes(summarize(load_rows, elapsed_seconds=load_elapsed, target_rps=config.rate)),
         "scripted": summarize(recorder.rows_for("scripted"), elapsed_seconds=None, target_rps=None),
         "failure_http": summarize(recorder.rows_for("failure"), elapsed_seconds=None, target_rps=None),
         "worker_lag": lag,
@@ -526,6 +527,25 @@ def _database_report(sampler: _Sampler) -> dict[str, Any]:
     base = sampler.database()
     base.pop("_lag_preview", None)
     return base
+
+
+def _with_missing_routes(summary: dict[str, Any]) -> dict[str, Any]:
+    """A required route with no load-phase samples stays UNKNOWN. It is not omitted."""
+
+    by_route = summary.setdefault("latency_by_route", {})
+    for route in _REQUIRED_ROUTES:
+        if route not in by_route:
+            by_route[route] = {
+                "status": "UNKNOWN",
+                "n": 0,
+                "p50_ms": None,
+                "p95_ms": None,
+                "p99_ms": None,
+                "max_ms": None,
+                "reason": "no load-phase samples",
+            }
+    summary["latency_by_route"] = dict(sorted(by_route.items()))
+    return summary
 
 
 def _host() -> dict[str, Any]:

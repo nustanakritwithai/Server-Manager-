@@ -12,7 +12,7 @@ Each failure scenario is followed by the same read-only checks. A check is `PASS
 
 | Check | What it proves |
 | --- | --- |
-| `ledger_conservation` | City stocks match the ledger. |
+| `ledger_conservation` | City wood, food, iron, and gold match the ledger. Building levels match `building:<name>` rows. Research levels match `research:<name>` rows. `unit:<type>` rows record an army count and are not compared to a city column. Any other resource name fails. |
 | `events_exactly_once` | No event is due, `processing`, or `failed`. No event idempotency key is duplicated. No event has two `processed` worker marks. |
 | `battle_reports_unique` | No event has two battle reports. |
 | `army_one_place` | No army has two in-progress movements, and a garrisoned army is not also marching. |
@@ -104,7 +104,35 @@ NOT YET MEASURED. This section is updated from the `load-failure-report` artifac
 
 ### Local rehearsal
 
-NOT YET MEASURED. A local run, when recorded, is labeled local and is not a substitute for the CI artifact.
+This is one local run of `--profile ci` on the development VM, not the GitHub runner and not the VPS. Result `PASS`, 106 of 106 checks, wall time 14.231 seconds. Host: Linux, Python 3.12.3, `cpu_count` 4, memory 16791945216 bytes. Seed 8741.
+
+Load phase (40 requests, target 8/s, achieved 7.999 requests/second over 5.001 seconds):
+
+| | p50 | p95 | p99 |
+| --- | --- | --- | --- |
+| All load-phase calls | 12.805 ms | 22.753 ms | 40.708 ms |
+
+Load-phase errors by code: `http_200` 36, `conflict` 4. HTTP 5xx: 0. Connection errors: 0.
+
+Load-phase attack and garrison were not drawn by the random mix in this run, so their load-phase latency is UNKNOWN. They were called in the scripted phase (attack n=4, p50 11.242 ms, p95/p99 75.061 ms; garrison n=1, 8.755 ms). A sample of one is the whole measurement.
+
+Worker lag during the whole run, sampled about every 0.4s (25 samples, 3 misses):
+
+| Series | Status | n | p50 | p95 | p99 | max |
+| --- | --- | --- | --- | --- | --- | --- |
+| `processed_at - due_at` (game time stored on the event) | MEASURED | 67 | 0 s | 0 s | 0 s | 0 s |
+| `event_queue.lag` from monitoring (game time) | MEASURED | 25 | 0 s | 4681.068 s | 5370.658 s | 5370.658 s |
+| `wall_at - due_at` | NOT INSTRUMENTED | | | | | |
+
+The large game-time lag is the clock advance that makes many events due at once, seen by a sample before the worker finishes them. It is not a wall-clock delay. `wall_at - due_at` is NOT INSTRUMENTED because `offset_seconds` was 12658 after those advances.
+
+API pool utilization (`database.pool`): n=25, p50 0.067, p95 0.133, max 0.133. Worker pool utilization: n=22, p50 0, p95 0, max 0. `pg_stat_activity` backends: n=27, p50 6, p95 8, max 8. That backend count is not pool utilization.
+
+Host CPU percent: n=28, p50 8.7, p95 34.9, max 50.0. Host memory percent: n=28, p50 70.3, p95 70.4, max 70.7. Child API+worker CPU percent: n=26, p50 14.2, p95 99.4, max 172.0 (more than 100 because it sums processes). Child RSS bytes: n=26, p50 178712576, p95 183353344, max 258633728.
+
+## Server bug fixed here
+
+`ledger_failures` treated `unit:`, `building:`, and `research:` ledger rows as unknown resources. Those rows are written when training, building, and research complete. A restore drill on a world that had done any of those would report a broken ledger even when city stocks matched. The check now compares wood, food, iron, and gold to the city columns, building rows to `cities.buildings`, and research rows to `players.research`. Unit rows stay in the ledger as an army count and are not compared to a city column. A resource name outside those forms still fails. No migration.
 
 ## ภาษาไทย
 
@@ -153,4 +181,6 @@ python -m simcore.load probe \
 
 คำขอนั้นคือ `GET /health` และ `GET /health/ready` เท่านั้น
 
-ผลที่วัดได้จาก CI จะถูกคัดลอกลงส่วนภาษาอังกฤษด้านบนหลังงานจบ ก่อนหน้านั้นส่วนนั้นคือ NOT YET MEASURED ไม่ใส่ตัวเลขคาดเดา
+ผลที่วัดได้จาก CI จะถูกคัดลอกลงส่วนภาษาอังกฤษด้านบนหลังงานจบ ก่อนหน้านั้นส่วน GitHub Actions คือ NOT YET MEASURED ไม่ใส่ตัวเลขคาดเดา ตัวเลขในหัวข้อ Local rehearsal มาจากการรันบนเครื่องพัฒนา ไม่ใช่ตัวเลขของ CI และไม่ใช่ของ VPS
+
+ช่องโหว่ที่แก้ในชุดนี้: `ledger_failures` เคยมองแถว `unit:` `building:` และ `research:` ว่าเป็นทรัพยากรที่ไม่รู้จัก ทั้งที่เซิร์ฟเวอร์เขียนแถวพวกนั้นเมื่อฝึกหน่วย สร้างอาคาร และวิจัยเสร็จ การตรวจสำรองข้อมูลจึงล้มบนโลกที่ปกติ ตอนนี้เทียบไม้ อาหาร เหล็ก และทองกับคอลัมน์เมือง เทียบอาคารกับ `cities.buildings` และเทียบการวิจัยกับ `players.research` แถวหน่วยทหารเป็นจำนวนในกองทัพ ไม่ได้เทียบกับคลังเมือง ไม่มี migration
