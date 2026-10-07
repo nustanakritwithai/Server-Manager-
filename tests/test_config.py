@@ -79,6 +79,7 @@ def test_production_rejects_a_blank_admin_token(monkeypatch: pytest.MonkeyPatch)
 def test_production_accepts_a_real_admin_token_and_keeps_admin_off(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SIMCORE_ENV", "production")
     monkeypatch.setenv("SIMCORE_ADMIN_TOKEN", "generated-token-not-a-default")
+    monkeypatch.setenv("SIMCORE_PLAYER_TOKEN_SECRET", "p" * 48)
     monkeypatch.delenv("SIMCORE_ENABLE_ADMIN", raising=False)
     get_settings.cache_clear()
     try:
@@ -86,6 +87,30 @@ def test_production_accepts_a_real_admin_token_and_keeps_admin_off(monkeypatch: 
         assert settings.admin_token == "generated-token-not-a-default"
         assert settings.admin_enabled is False
         assert settings.embedded_worker is False
+    finally:
+        get_settings.cache_clear()
+
+
+def test_production_rejects_a_missing_or_dev_player_token_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SIMCORE_ENV", "production")
+    monkeypatch.setenv("SIMCORE_ADMIN_TOKEN", "generated-token-not-a-default")
+    monkeypatch.delenv("SIMCORE_PLAYER_TOKEN_SECRET", raising=False)
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(ValidationError, match="SIMCORE_PLAYER_TOKEN_SECRET"):
+            Settings(_env_file=None)
+    finally:
+        get_settings.cache_clear()
+
+
+def test_production_rejects_a_short_player_token_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SIMCORE_ENV", "production")
+    monkeypatch.setenv("SIMCORE_ADMIN_TOKEN", "generated-token-not-a-default")
+    monkeypatch.setenv("SIMCORE_PLAYER_TOKEN_SECRET", "p" * 16)
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(ValidationError, match="SIMCORE_PLAYER_TOKEN_SECRET"):
+            Settings(_env_file=None)
     finally:
         get_settings.cache_clear()
 

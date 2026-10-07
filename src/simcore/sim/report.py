@@ -91,6 +91,19 @@ def render_markdown(payload: dict[str, Any]) -> str:
     else:
         for item in skipped:
             lines.append(f"- `{item.get('action')}`: {item.get('reason')}")
+    lines.extend(["", "## Auth coverage", ""])
+    auth = payload.get("auth_coverage") or {}
+    lines.append(f"Verdict: {auth.get('verdict') or 'NOT RUN'}.")
+    lines.append("")
+    auth_matrix = auth.get("matrix") or []
+    if auth_matrix:
+        lines.append("| Case | Status | Detail |")
+        lines.append("| --- | --- | --- |")
+        for row in auth_matrix:
+            detail = str(row.get("detail") or "").replace("|", "/")
+            lines.append(f"| {row.get('name')} | {row.get('status')} | {detail} |")
+    else:
+        lines.append("Not run. CI and full mode exercise register, login, and refresh after the world is scored.")
     coverage = payload.get("coverage")
     lines.extend(["", "## Coverage", ""])
     if not isinstance(coverage, dict):

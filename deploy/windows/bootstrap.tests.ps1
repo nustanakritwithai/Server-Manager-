@@ -55,8 +55,10 @@ Assert-True "db generated" (-not [string]::IsNullOrWhiteSpace([string]$empty.Map
 Assert-True "admin generated" (-not [string]::IsNullOrWhiteSpace([string]$empty.Map["SIMCORE_ADMIN_TOKEN"]))
 Assert-True "secrets differ" (
     $empty.Map["POSTGRES_SUPER_PASSWORD"] -ne $empty.Map["SIMCORE_DB_PASSWORD"] -and
-    $empty.Map["SIMCORE_DB_PASSWORD"] -ne $empty.Map["SIMCORE_ADMIN_TOKEN"]
+    $empty.Map["SIMCORE_DB_PASSWORD"] -ne $empty.Map["SIMCORE_ADMIN_TOKEN"] -and
+    $empty.Map["SIMCORE_ADMIN_TOKEN"] -ne $empty.Map["SIMCORE_PLAYER_TOKEN_SECRET"]
 )
+Assert-True "player secret generated" (Test-SimcorePlayerTokenSecret ([string]$empty.Map["SIMCORE_PLAYER_TOKEN_SECRET"]))
 $escaped = [uri]::EscapeDataString([string]$empty.Map["SIMCORE_DB_PASSWORD"])
 Assert-Equal "canonical url" $empty.Map["SIMCORE_DATABASE_URL"] "postgresql+psycopg://simcore:${escaped}@127.0.0.1:5432/simcore"
 Assert-Equal "default env" $empty.Map["SIMCORE_ENV"] "production"
@@ -66,6 +68,7 @@ $again = Complete-SimcoreProductionEnv -Map $empty.Map -InstallRoot "C:\simcore"
 Assert-True "second pass keeps values" (-not $again.Changed)
 Assert-Equal "super stable" $again.Map["POSTGRES_SUPER_PASSWORD"] $empty.Map["POSTGRES_SUPER_PASSWORD"]
 Assert-Equal "admin stable" $again.Map["SIMCORE_ADMIN_TOKEN"] $empty.Map["SIMCORE_ADMIN_TOKEN"]
+Assert-Equal "player secret stable" $again.Map["SIMCORE_PLAYER_TOKEN_SECRET"] $empty.Map["SIMCORE_PLAYER_TOKEN_SECRET"]
 
 $partial = @{
     SIMCORE_ADMIN_TOKEN = "keep-admin"
@@ -80,6 +83,31 @@ Assert-Equal "db kept" $filled.Map["SIMCORE_DB_PASSWORD"] "keep-db"
 Assert-True "blank super replaced" (-not [string]::IsNullOrWhiteSpace([string]$filled.Map["POSTGRES_SUPER_PASSWORD"]))
 Assert-Equal "url password updated" $filled.Map["SIMCORE_DATABASE_URL"] "postgresql+psycopg://simcore:keep-db@10.0.0.5:5432/simcore"
 Assert-Equal "admin flag kept" $filled.Map["SIMCORE_ENABLE_ADMIN"] "true"
+Assert-True "partial player secret generated" (Test-SimcorePlayerTokenSecret ([string]$filled.Map["SIMCORE_PLAYER_TOKEN_SECRET"]))
+
+$weak = @{
+    SIMCORE_ADMIN_TOKEN = "keep-admin"
+    SIMCORE_DB_PASSWORD = "keep-db"
+    POSTGRES_SUPER_PASSWORD = "keep-super"
+    SIMCORE_DATABASE_URL = "postgresql+psycopg://simcore:keep-db@127.0.0.1:5432/simcore"
+    SIMCORE_PLAYER_TOKEN_SECRET = "change_me"
+    SIMCORE_ENV = "production"
+}
+$replaced = Complete-SimcoreProductionEnv -Map $weak -InstallRoot "C:\simcore" -ApiDomain "157-85-96-139.sslip.io" -ApiPort "8741" -AcmeEmail ""
+Assert-True "weak player secret replaced" (Test-SimcorePlayerTokenSecret ([string]$replaced.Map["SIMCORE_PLAYER_TOKEN_SECRET"]))
+Assert-True "weak player secret changed" ($replaced.Map["SIMCORE_PLAYER_TOKEN_SECRET"] -ne "change_me")
+Assert-Equal "weak pass keeps admin" $replaced.Map["SIMCORE_ADMIN_TOKEN"] "keep-admin"
+
+$blankSecret = @{
+    SIMCORE_ADMIN_TOKEN = "keep-admin"
+    SIMCORE_DB_PASSWORD = "keep-db"
+    POSTGRES_SUPER_PASSWORD = "keep-super"
+    SIMCORE_DATABASE_URL = "postgresql+psycopg://simcore:keep-db@127.0.0.1:5432/simcore"
+    SIMCORE_PLAYER_TOKEN_SECRET = ""
+    SIMCORE_ENV = "production"
+}
+$filledBlank = Complete-SimcoreProductionEnv -Map $blankSecret -InstallRoot "C:\simcore" -ApiDomain "157-85-96-139.sslip.io" -ApiPort "8741" -AcmeEmail ""
+Assert-True "blank player secret replaced" (Test-SimcorePlayerTokenSecret ([string]$filledBlank.Map["SIMCORE_PLAYER_TOKEN_SECRET"]))
 
 $keptUrl = Get-SimcoreDatabaseUrlForPassword -Url "postgresql+psycopg://simcore:keep-db@127.0.0.1:5432/simcore" -Password "keep-db"
 Assert-Equal "matching url unchanged" $keptUrl "postgresql+psycopg://simcore:keep-db@127.0.0.1:5432/simcore"

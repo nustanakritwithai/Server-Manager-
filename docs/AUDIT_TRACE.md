@@ -3,7 +3,7 @@
 Phase 4 records two different things.
 
 - An **event trace** follows one accepted player command through the movements, events, battle, ledger rows, and report that came from it, including the walk home.
-- An **audit log** records admin and system actions. It is append-only and hash-chained. It is not part of the world snapshot.
+- An **audit log** records admin and system actions, plus player-auth events (`auth.register`, `auth.login`, `auth.lockout`, `auth.refresh_reuse`, `auth.logout_all`, `auth.dev_login` when production refuses it, and admin account lock, unlock, revoke, and temporary password). It is append-only and hash-chained. It is not part of the world snapshot. Passwords, password hashes, access tokens, and refresh tokens are not written into it.
 
 The server computes both. The admin page only displays the JSON.
 

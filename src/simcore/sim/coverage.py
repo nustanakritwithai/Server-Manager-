@@ -790,7 +790,7 @@ class _Script:
             _, cities = self.api.json("GET", "/v1/me/cities", headers=headers)
             _, armies = self.api.json("GET", "/v1/me/armies", headers=headers)
             parts.append({"cities": cities, "armies": armies})
-        _, clock = self.api.json("GET", "/v1/time")
+        _, clock = self.api.json("GET", "/v1/time", headers=_bearer(self.actors[0]))
         parts.append({"time": clock})
         return json.dumps(parts, sort_keys=True, default=str)
 
@@ -816,7 +816,7 @@ class _Script:
         return rows[0]
 
     def _wait(self, when: datetime) -> None:
-        now = _server_now(self.api)
+        now = _server_now(self.api, _bearer(self.actors[0]))
         if when > now:
             seconds = max(1, math.ceil((when - now).total_seconds()))
             self.advance(self.api, seconds)
@@ -825,7 +825,7 @@ class _Script:
 
     def _catch_pending(self) -> None:
         for _ in range(40):
-            now = _server_now(self.api)
+            now = _server_now(self.api, _bearer(self.actors[0]))
             status, body = self.api.json(
                 "GET",
                 "/v1/admin/events",
@@ -913,8 +913,8 @@ def _parse_time(value: object) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-def _server_now(api: ApiClient) -> datetime:
-    status, body = api.json("GET", "/v1/time")
+def _server_now(api: ApiClient, headers: dict[str, str]) -> datetime:
+    status, body = api.json("GET", "/v1/time", headers=headers)
     if status != 200 or not isinstance(body, dict):
         raise RuntimeError("GET /v1/time failed")
     return _parse_time(body.get("server_time"))

@@ -144,6 +144,8 @@ def test_ci_same_seed_matches(db: None, tmp_path: Path) -> None:
     assert first["counts"]["battles"] > 0
     assert first["trace_verdicts"]["FAIL"] == 0
     assert first["audit_chain"]["status"] == "PASS"
+    assert first["auth_coverage"]["verdict"] == "COMPLETE"
+    assert second["auth_coverage"]["verdict"] == "COMPLETE"
     assert first["skipped_actions"] == []
     report = json.loads((tmp_path / "a" / "report.json").read_text(encoding="utf-8"))
     assert report["result"] == "PASS"

@@ -105,7 +105,8 @@ def main() -> None:
         session.close()
     if created:
         print("Seeded Alice (Oakhold) and Bob (Ironford).")
-        print("Dev login: POST /v1/auth/dev-login {\"name\": \"Alice\"}  — placeholder token, not real auth.")
+        print("Players have no password yet. An admin sets a temporary password; see docs/PLAYER_AUTH.md.")
+        print("Dev login (development only): POST /v1/auth/dev-login {\"name\": \"Alice\"}.")
     else:
         print("World already has players; seed skipped.")
 

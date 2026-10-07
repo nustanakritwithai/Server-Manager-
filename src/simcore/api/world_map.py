@@ -353,7 +353,7 @@ def world_map(
 
 @router.get("/world-map")
 def admin_world_map(
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     clock: Annotated[OffsetClock, Depends(get_clock)],
     _: Annotated[Settings, Depends(require_admin)],
     player_id: int | None = None,

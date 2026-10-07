@@ -17,8 +17,11 @@ The document covers schema_version, world_state (id, offset_seconds,
 world_version), and every column of players, cities, armies, player_commands,
 movements, events, battle_reports, and transactions. Nullable trace_id columns
 are part of that document. It does not cover snapshot rows, the audit log,
-worker heartbeats, process marks, monitoring samples, monitoring check state,
-commands_open, or worker_paused. world_time on the snapshot row is metadata
+player accounts, refresh sessions, command idempotency keys, worker heartbeats,
+process marks, monitoring samples, monitoring check state, commands_open, or
+worker_paused. Restore deletes command idempotency keys so a replay cannot
+return a result from the pre-restore world. It does not delete accounts or
+refresh sessions. world_time on the snapshot row is metadata
 (the simulated clock at capture) and is not hashed; offset_seconds is the
 hashed clock state.
 
@@ -70,6 +73,7 @@ from simcore.models import (
     Army,
     BattleReport,
     City,
+    CommandIdempotency,
     Event,
     Movement,
     Player,
@@ -414,6 +418,11 @@ def _reset_sequences(session: Session) -> None:
 
 
 def _replace_world(session: Session, document: dict[str, Any]) -> None:
+    # Command replays describe results, not the world. Drop them with the
+    # replacement so a key from before the restore cannot skip a new command.
+    # Accounts and refresh sessions are intentionally left in place.
+    session.execute(delete(CommandIdempotency))
+    session.flush()
     for model in _DELETE_ORDER:
         session.execute(delete(model))
     session.flush()

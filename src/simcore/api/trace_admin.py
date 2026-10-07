@@ -18,7 +18,7 @@ audit_router = APIRouter(prefix="/audit", tags=["admin"])
 
 @trace_router.get("")
 def admin_search_traces(
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     _: Annotated[Settings, Depends(require_admin)],
     player: int | None = None,
     army: int | None = None,
@@ -43,7 +43,7 @@ def admin_search_traces(
 @trace_router.get("/{trace_id}")
 def admin_get_trace(
     trace_id: str,
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     _: Annotated[Settings, Depends(require_admin)],
 ) -> dict[str, object]:
     """Ordered timeline and the server-side integrity verdict for one command."""
@@ -53,7 +53,7 @@ def admin_get_trace(
 
 @audit_router.get("")
 def admin_list_audit(
-    session: Annotated[Session, Depends(get_session)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
     _: Annotated[Settings, Depends(require_admin)],
     actor: str | None = None,
     action: str | None = None,

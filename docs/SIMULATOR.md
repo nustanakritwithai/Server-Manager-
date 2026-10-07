@@ -8,7 +8,7 @@ Phase 8 (load and failure injection) is not this tool. Command submission is a s
 
 ## What the bots can do
 
-They log in with `POST /v1/auth/dev-login` and then use only the player routes:
+CI registers each bot with `POST /v1/auth/register`, refreshes once, and then uses only the player routes. The password is derived from the seed and the bot name inside the process. It is not stored in the world snapshot. Staging does not call dev-login. It sets a temporary password on each existing player through the admin accounts API, changes that password, and refreshes. That replaces any password those players already had. Every command sends an `Idempotency-Key`. After the scenario, CI runs an auth coverage matrix (wrong password, expired and forged tokens, a token for player A used on player B's army, refresh reuse, login and command rate limits, an idempotent replay, and dev-login disabled in production mode). The run is FAIL unless that matrix is `COMPLETE` and every invariant is PASS.
 
 | Action | Endpoint |
 | --- | --- |
@@ -47,7 +47,7 @@ The admin token is read from `SIMCORE_ADMIN_TOKEN` at runtime. The simulator doe
 
 ## CI mode (local)
 
-CI mode migrates the database, seeds `Bot01` … if the database has **no** players, starts an API on `127.0.0.1`, and plays. Time moves by `POST /v1/admin/clock/advance`. Due events are applied by `POST /v1/admin/worker/tick`, which is the same worker path the process already uses. The base clock is the test `FrozenClock` fixed at `2026-01-01T00:00:00Z`, so a run finishes in well under two minutes of wall time. Results are not invented: every battle and ledger row is produced by that API and that worker.
+CI mode migrates the database, starts an API on `127.0.0.1`, registers `Bot01` … over HTTP, then attaches cities and armies if the database has **no** cities, and plays. Time moves by `POST /v1/admin/clock/advance`. Due events are applied by `POST /v1/admin/worker/tick`, which is the same worker path the process already uses. The base clock is the test `FrozenClock` fixed at `2026-01-01T00:00:00Z`, so a run finishes in well under two minutes of wall time. Results are not invented: every battle and ledger row is produced by that API and that worker.
 
 Use a fresh database whose name contains `test` or `_sim`. `simcore_test` and `simcore_sim` are the usual names. The simulator will not seed `simcore` (the docker-compose and VPS database) and it will not delete players that are already there.
 
@@ -69,7 +69,9 @@ python -m simcore.sim --mode ci --players 4 --seed 8741 --ticks 4 --command-rate
 - two garrisons depart together and are processed on the same worker tick
 - militia versus militia draws, militia versus cavalry loses, cavalry against an empty city wins and carries loot home
 
-The report's `coverage` object is **COMPLETE** only when every endpoint and command has both a tested valid path and a tested invalid path, and every invariant is PASS, except `monitoring.backup.last_success`. That check stays `UNKNOWN` in the lab because there is no verified off-site upload, and the report keeps the status `UNKNOWN`. It is not rewritten to PASS. Any other non-PASS invariant is a gap. Anything not exercised is `NOT TESTED`. A `NOT CHECKED` invariant is a gap, not a pass. Otherwise the verdict is **INCOMPLETE** and the `gaps` list says what is missing. The run result is FAIL when the verdict is not COMPLETE.
+Bots register over HTTP first. Cities and armies are attached afterwards on the coverage roster. The full-mode server process raises `SIMCORE_COMMAND_RATE_LIMIT` to 200 so that scripted scene is not throttled. Production stays at 30 commands per minute. Auth coverage still rejects the next command past whichever limit that process is using.
+
+The report's `coverage` object is **COMPLETE** only when every endpoint and command has both a tested valid path and a tested invalid path, and every invariant is PASS, except `monitoring.backup.last_success`. That check stays `UNKNOWN` in the lab because there is no verified off-site upload, and the report keeps the status `UNKNOWN`. It is not rewritten to PASS. Any other non-PASS invariant is a gap. Anything not exercised is `NOT TESTED`. A `NOT CHECKED` invariant is a gap, not a pass. Otherwise the verdict is **INCOMPLETE** and the `gaps` list says what is missing. The run result is FAIL when the verdict is not COMPLETE. `auth_coverage` is scored after the world snapshot, and the run is also FAIL unless that verdict is COMPLETE.
 
 ```bash
 python -m simcore.sim --mode full --players 4 --seed 8741 --ticks 2 --command-rate 1 --report-dir sim-reports/full
@@ -89,7 +91,7 @@ Exit code `0` is PASS, `1` is a failed check or a runtime error, `2` is a safety
 
 ## GitHub Actions
 
-The Tests workflow has a `simulator` job on PostgreSQL 16. It runs `--mode full` twice, on `simcore_sim` and `simcore_sim_b`, with seed 8741, and fails the job if either report is not PASS, the coverage verdict is not COMPLETE, or the snapshot checksums differ. The pytest job is unchanged and includes a smaller two-run CI check (`tests/test_simulator.py`). Reports are uploaded as the `simulator-reports` artifact.
+The Tests workflow has a `simulator` job on PostgreSQL 16. It runs `--mode full` twice, on `simcore_sim` and `simcore_sim_b`, with seed 8741, and fails the job if either report is not PASS, `coverage` or `auth_coverage` is not COMPLETE, or the snapshot checksums differ. The pytest job is unchanged and includes a smaller two-run CI check (`tests/test_simulator.py`). Reports are uploaded as the `simulator-reports` artifact.
 
 The admin token in that job is the same development placeholder the pytest job already puts in the environment. It is not a production credential.
 

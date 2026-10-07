@@ -3,6 +3,8 @@ from functools import lru_cache
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from simcore.runtime_secrets import player_token_secret_is_usable
+
 # Browser origins used when trying the static client against a local API.
 # Production does not add these on its own; put them in SIMCORE_CORS_ORIGINS
 # only if you want a laptop on the same machine to call the public API.
@@ -67,6 +69,19 @@ class Settings(BaseSettings):
     admin_session_version: int = 1
     admin_login_max_failures: int = 8
     admin_login_window_seconds: int = 15 * 60
+    # HMAC key for player access tokens. Bootstrap and update.ps1 generate it.
+    # The development default is rejected when SIMCORE_ENV=production.
+    player_token_secret: str = "dev-player-token-secret-not-for-production"
+    player_access_ttl_seconds: int = 15 * 60
+    player_refresh_ttl_seconds: int = 30 * 24 * 60 * 60
+    # Off unless SIMCORE_ENV is dev/development/test/testing, or this is true.
+    enable_dev_login: bool = False
+    player_login_max_failures: int = 5
+    player_login_ip_max_failures: int = 20
+    player_login_window_seconds: int = 15 * 60
+    player_login_lockout_seconds: int = 15 * 60
+    command_rate_limit: int = 30
+    command_rate_window_seconds: int = 60
     worker_poll_seconds: float = 1.0
     max_event_attempts: int = 5
     # Comma-separated browser origins. The Windows bootstrap writes this.
@@ -157,8 +172,36 @@ class Settings(BaseSettings):
             raise ValueError("SIMCORE_ADMIN_LOGIN_MAX_FAILURES must be at least 1")
         if self.admin_login_window_seconds < 1:
             raise ValueError("SIMCORE_ADMIN_LOGIN_WINDOW_SECONDS must be at least 1")
+        self.player_token_secret = self.player_token_secret.strip()
+        if self.env == "production" and not player_token_secret_is_usable(
+            self.player_token_secret, production=True
+        ):
+            raise ValueError(
+                "SIMCORE_PLAYER_TOKEN_SECRET must be a unique random value of at least 32 characters "
+                "when SIMCORE_ENV=production. deploy/windows/update.ps1 writes one into .env.prod when it is missing."
+            )
+        if self.player_access_ttl_seconds < 60:
+            raise ValueError("SIMCORE_PLAYER_ACCESS_TTL_SECONDS must be at least 60")
+        if self.player_refresh_ttl_seconds < self.player_access_ttl_seconds:
+            raise ValueError("SIMCORE_PLAYER_REFRESH_TTL_SECONDS must be at least the access token lifetime")
+        if self.player_login_max_failures < 1:
+            raise ValueError("SIMCORE_PLAYER_LOGIN_MAX_FAILURES must be at least 1")
+        if self.player_login_ip_max_failures < 1:
+            raise ValueError("SIMCORE_PLAYER_LOGIN_IP_MAX_FAILURES must be at least 1")
+        if self.player_login_window_seconds < 1 or self.player_login_lockout_seconds < 1:
+            raise ValueError("SIMCORE_PLAYER_LOGIN window and lockout must be at least 1 second")
+        if self.command_rate_limit < 1 or self.command_rate_window_seconds < 1:
+            raise ValueError("SIMCORE_COMMAND_RATE_LIMIT and SIMCORE_COMMAND_RATE_WINDOW_SECONDS must be at least 1")
         self._check_monitor()
         return self
+
+    @property
+    def dev_login_enabled(self) -> bool:
+        """Placeholder dev-login. Production stays off unless SIMCORE_ENABLE_DEV_LOGIN=true."""
+
+        if self.enable_dev_login:
+            return True
+        return self.env.strip().lower() in {"dev", "development", "test", "testing"}
 
     def _check_monitor(self) -> None:
         if self.monitor_sample_seconds < 0:

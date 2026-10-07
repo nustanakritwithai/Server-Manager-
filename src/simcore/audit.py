@@ -34,7 +34,7 @@ def _canon_dt(value: datetime) -> str:
 
 
 def _reject_secrets(value: str) -> None:
-    if "simadm1." in value or "scrypt$" in value:
+    if "simadm1." in value or "simplyr1." in value or "scrypt$" in value:
         raise RuntimeError("audit log refused a secret value")
 
 

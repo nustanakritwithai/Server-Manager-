@@ -3,6 +3,10 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+from simcore.runtime_secrets import ensure_player_token_secret
+
+ensure_player_token_secret()
+
 from simcore.config import get_settings
 from simcore.models import Base
 

@@ -128,9 +128,12 @@ jobs:
           if first.get("command_sequence") != second.get("command_sequence"):
               errors.append("command sequences differ")
           for label, report in (("A", first), ("B", second)):
-              coverage = report.get("coverage") or {}
-              if coverage.get("verdict") != "COMPLETE":
-                  errors.append(label + " coverage " + str(coverage.get("verdict")) + " " + json.dumps(coverage.get("gaps")))
+              auth = report.get("auth_coverage") or {}
+              if auth.get("verdict") != "COMPLETE":
+                  errors.append(label + " auth coverage " + json.dumps(auth.get("gaps")))
+              game = report.get("coverage") or {}
+              if game.get("verdict") != "COMPLETE":
+                  errors.append(label + " coverage " + str(game.get("verdict")) + " " + json.dumps(game.get("gaps")))
           if errors:
               print("\n".join(errors), file=sys.stderr)
               sys.exit(1)

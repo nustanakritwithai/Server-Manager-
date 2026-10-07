@@ -40,18 +40,57 @@
 
     <section id="login-panel" class="panel">
       <div class="panel-head">
-        <h2>เข้าสู่ระบบทดลอง</h2>
-        <p class="muted">โทเคนเป็นรหัสผู้เล่นตรง ๆ ไม่มีการลงนาม ใช้ได้เฉพาะโลกสาธิต Alice / Bob</p>
+        <h2>เข้าสู่ระบบ</h2>
+        <p class="muted">ชื่อผู้ใช้หรืออีเมลกับรหัสผ่าน เซิร์ฟเวอร์ส่ง Bearer token ไม่ใช้คุกกี้</p>
       </div>
       <form id="login-form" class="row">
         <label class="grow">
-          <span class="label">ชื่อผู้เล่น</span>
-          <input id="player-name" name="name" value="Alice" maxlength="40" required />
+          <span class="label">ชื่อผู้ใช้หรืออีเมล</span>
+          <input id="login-username" name="username" maxlength="254" autocomplete="username" required />
+        </label>
+        <label class="grow">
+          <span class="label">รหัสผ่าน</span>
+          <input id="login-password" name="password" type="password" maxlength="1024" autocomplete="current-password" required />
         </label>
         <button type="submit">เข้าสู่ระบบ</button>
+      </form>
+      <form id="register-form" class="row">
+        <label class="grow">
+          <span class="label">สมัครชื่อผู้ใช้</span>
+          <input id="register-username" name="username" maxlength="32" autocomplete="username" required />
+        </label>
+        <label class="grow">
+          <span class="label">อีเมล (ไม่บังคับ)</span>
+          <input id="register-email" name="email" type="email" maxlength="254" autocomplete="email" />
+        </label>
+        <label class="grow">
+          <span class="label">รหัสผ่านอย่างน้อย 10 ตัว</span>
+          <input id="register-password" name="password" type="password" maxlength="1024" autocomplete="new-password" required />
+        </label>
+        <button type="submit" class="ghost">สมัคร</button>
+      </form>
+      <form id="change-password-form" class="row" hidden>
+        <label class="grow">
+          <span class="label">รหัสผ่านปัจจุบัน</span>
+          <input id="current-password" type="password" maxlength="1024" autocomplete="current-password" required />
+        </label>
+        <label class="grow">
+          <span class="label">รหัสผ่านใหม่</span>
+          <input id="new-password" type="password" maxlength="1024" autocomplete="new-password" required />
+        </label>
+        <button type="submit">เปลี่ยนรหัสผ่าน</button>
+      </form>
+      <div class="panel-head">
+        <p class="muted">โหมดพัฒนาเท่านั้น: Alice / Bob ผ่าน dev-login บนเซิร์ฟเวอร์ที่เปิดเส้นทางนี้</p>
+      </div>
+      <div class="row">
+        <label class="grow">
+          <span class="label">ชื่อผู้เล่นทดลอง</span>
+          <input id="player-name" name="name" value="Alice" maxlength="40" />
+        </label>
         <button type="button" data-player="Alice" class="ghost">Alice</button>
         <button type="button" data-player="Bob" class="ghost">Bob</button>
-      </form>
+      </div>
       <p id="login-note" class="muted"></p>
     </section>
 

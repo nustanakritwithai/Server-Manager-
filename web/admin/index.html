@@ -68,6 +68,7 @@
       <button type="button" data-nav="ledger">Ledger</button>
       <button type="button" data-nav="trace">Event trace</button>
       <button type="button" data-nav="audit">Audit log</button>
+      <button type="button" data-nav="accounts">Accounts</button>
       <button type="button" data-nav="monitoring">Monitoring</button>
       <button type="button" data-nav="actions">Actions</button>
     </nav>
@@ -255,6 +256,29 @@
           <button type="button" id="audit-next" class="ghost">Next</button>
           <p id="audit-page" class="muted"></p>
         </div>
+      </section>
+
+      <section data-view="accounts" class="panel" hidden>
+        <div class="panel-head">
+          <h2>Accounts</h2>
+          <p class="muted">List and search player accounts. Lock, unlock, revoke sessions, or set a temporary password. This page cannot delete an account or edit the ledger. The password is not shown after it is set.</p>
+        </div>
+        <form id="account-search" class="row">
+          <label class="grow"><span class="label">Search name, username, email, or player id</span><input id="account-query" autocomplete="off" /></label>
+          <button type="submit">Search</button>
+        </form>
+        <div id="account-table"></div>
+        <form id="temp-password-form" class="warn-box">
+          <h3>Temporary password</h3>
+          <p>Players created by dev-login have no password until this is set. The player must change it at the next login. Existing sessions are revoked.</p>
+          <div class="row">
+            <label><span class="label">Player id</span><input id="temp-player-id" type="number" min="1" required /></label>
+            <label class="grow"><span class="label">Temporary password</span><input id="temp-password" type="password" maxlength="1024" autocomplete="new-password" required /></label>
+            <button type="submit">Set temporary password</button>
+          </div>
+        </form>
+        <p id="account-note" class="muted"></p>
+        <div id="account-sessions"></div>
       </section>
 
       <section data-view="monitoring" class="panel" hidden>
