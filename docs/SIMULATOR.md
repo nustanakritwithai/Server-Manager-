@@ -71,7 +71,7 @@ python -m simcore.sim --mode ci --players 4 --seed 8741 --ticks 4 --command-rate
 
 Bots register over HTTP first. Cities and armies are attached afterwards on the coverage roster. The full-mode server process raises `SIMCORE_COMMAND_RATE_LIMIT` to 200 so that scripted scene is not throttled. Production stays at 30 commands per minute. Auth coverage still rejects the next command past whichever limit that process is using.
 
-The report's `coverage` object is **COMPLETE** only when every endpoint and command has both a tested valid path and a tested invalid path, and every invariant is PASS. Anything not exercised is `NOT TESTED`. A `NOT CHECKED` invariant is a gap, not a pass. Otherwise the verdict is **INCOMPLETE** and the `gaps` list says what is missing. The run result is FAIL when the verdict is not COMPLETE. `auth_coverage` is scored after the world snapshot, and the run is also FAIL unless that verdict is COMPLETE.
+The report's `coverage` object is **COMPLETE** only when every endpoint and command has both a tested valid path and a tested invalid path, and every invariant is PASS, except `monitoring.backup.last_success`. That check stays `UNKNOWN` in the lab because there is no verified off-site upload, and the report keeps the status `UNKNOWN`. It is not rewritten to PASS. Any other non-PASS invariant is a gap. Anything not exercised is `NOT TESTED`. A `NOT CHECKED` invariant is a gap, not a pass. Otherwise the verdict is **INCOMPLETE** and the `gaps` list says what is missing. The run result is FAIL when the verdict is not COMPLETE. `auth_coverage` is scored after the world snapshot, and the run is also FAIL unless that verdict is COMPLETE.
 
 ```bash
 python -m simcore.sim --mode full --players 4 --seed 8741 --ticks 2 --command-rate 1 --report-dir sim-reports/full
@@ -168,7 +168,7 @@ Thresholds, written down before the run is scored:
 - no second effect for the same event, city, resource, and reason; no second live event of the same type on one movement; no event left `failed` or `processing`
 - army count is the seeded armies plus armies spawned by completed training; alive units plus casualties equal the seeded stacks plus completed training counts
 - the audit hash chain status is `PASS`
-- a monitoring check whose status is `CRITICAL` fails the run. `UNKNOWN` and `NOT INSTRUMENTED` are copied into the report under those names. CI reads monitoring before the verification snapshot, so `game.last_snapshot` is `UNKNOWN` on a fresh database. That is not a pass and it does not fail the CI result. Full mode writes a snapshot first so that check can be OK, which the COMPLETE verdict requires
+- a monitoring check whose status is `CRITICAL` fails the run. `UNKNOWN` and `NOT INSTRUMENTED` are copied into the report under those names. CI reads monitoring before the verification snapshot, so `game.last_snapshot` is `UNKNOWN` on a fresh database. That is not a pass and it does not fail the CI result. Full mode writes a snapshot first so that check can be OK, which the COMPLETE verdict requires. `backup.last_success` stays `UNKNOWN` in CI: the job does not upload a dump, and it does not write a fake `last_verified_at`. That one UNKNOWN is listed and is not a coverage gap. Every other UNKNOWN monitoring check still makes the verdict INCOMPLETE
 - end-of-run event lag is `0` in CI (staging allows the monitoring critical lag, 120 seconds)
 - peak lag in CI may be as large as one clock step, not two
 - client p95 latency at most 5000 ms, average at most 2000 ms

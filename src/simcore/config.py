@@ -138,6 +138,12 @@ class Settings(BaseSettings):
     monitor_cpu_critical_percent: float = 98
     monitor_memory_warn_percent: float = 85
     monitor_memory_critical_percent: float = 95
+    # Off-site backup status written by deploy/windows/backup.ps1.
+    # Empty uses C:\simcore\backups\backup-status.json on Windows, and is
+    # UNKNOWN elsewhere until SIMCORE_BACKUP_STATUS_PATH is set.
+    backup_status_path: str = ""
+    backup_warn_hours: float = 26
+    backup_critical_hours: float = 50
 
     @field_validator("database_url", mode="before")
     @classmethod
@@ -232,6 +238,11 @@ class Settings(BaseSettings):
             raise ValueError("SIMCORE_MONITOR_DISK_FREE warn and critical must be greater than zero")
         if self.monitor_disk_free_warn_mb <= self.monitor_disk_free_critical_mb:
             raise ValueError("SIMCORE_MONITOR_DISK_FREE_WARN_MB must be above SIMCORE_MONITOR_DISK_FREE_CRITICAL_MB")
+        self.backup_status_path = self.backup_status_path.strip()
+        if self.backup_warn_hours <= 0 or self.backup_critical_hours <= 0:
+            raise ValueError("SIMCORE_BACKUP_WARN_HOURS and SIMCORE_BACKUP_CRITICAL_HOURS must be greater than zero")
+        if self.backup_warn_hours >= self.backup_critical_hours:
+            raise ValueError("SIMCORE_BACKUP_WARN_HOURS must be below SIMCORE_BACKUP_CRITICAL_HOURS")
 
     @property
     def monitor_disk_free_warn_bytes(self) -> int:

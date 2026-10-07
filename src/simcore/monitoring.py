@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 
 from simcore import __version__
 from simcore.audit import append_audit
+from simcore.backup import evaluate_backup_check
 from simcore.clock import Clock, SystemClock
 from simcore.config import Settings, get_settings
 from simcore.constants import EventStatus
@@ -727,6 +728,37 @@ def _host_checks(settings: Settings) -> list[dict[str, Any]]:
             )
         )
     return checks
+
+
+def _backup_check(settings: Settings, wall_now: datetime) -> dict[str, Any]:
+    """Age of the last verified off-site dump. The status file is not a world snapshot."""
+
+    try:
+        body = evaluate_backup_check(
+            settings.backup_status_path,
+            now=wall_now,
+            warn_hours=settings.backup_warn_hours,
+            critical_hours=settings.backup_critical_hours,
+        )
+    except Exception as exc:
+        return _check(
+            "backup.last_success",
+            UNKNOWN,
+            value=None,
+            unit="seconds",
+            reason=f"Backup status could not be read ({exc.__class__.__name__}). This is not a pass.",
+            affects_overall=False,
+        )
+    return _check(
+        "backup.last_success",
+        str(body["status"]),
+        value=body["value"],
+        unit="seconds",
+        reason=str(body["reason"]),
+        affects_overall=bool(body["affects_overall"]),
+        threshold=body.get("threshold"),
+        detail=body.get("detail"),
+    )
 
 
 def _commit_check() -> dict[str, Any]:
@@ -1488,6 +1520,7 @@ def collect_report(
     if include_api:
         checks.extend(_api_checks(settings))
     checks.append(_disk_check(settings))
+    checks.append(_backup_check(settings, wall_now))
     checks.extend(_host_checks(settings))
     checks.append(_commit_check())
     commit = git_commit()
