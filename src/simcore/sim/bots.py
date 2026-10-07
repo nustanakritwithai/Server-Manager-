@@ -11,32 +11,17 @@ import random
 from dataclasses import dataclass
 from typing import Any
 
-from simcore.game.catalog import BUILDINGS, RESEARCH
+from simcore.game.catalog import (
+    BUILDINGS,
+    FOUND_CITY_COST,
+    MAX_CITIES_PER_PLAYER,
+    RESEARCH,
+    UNIT_TRAINING,
+)
 from simcore.sim.seed_world import profile_for
 
-# Actions the public API does not offer. Reported on every run.
-UNAVAILABLE_ACTIONS: tuple[dict[str, str], ...] = (
-    {
-        "action": "train_units",
-        "reason": "No public endpoint recruits units or replaces a destroyed army.",
-    },
-    {
-        "action": "found_city",
-        "reason": "No public endpoint creates a city. Bots only use cities that already exist.",
-    },
-    {
-        "action": "garrison",
-        "reason": (
-            "No garrison endpoint. A garrison is an army with status garrisoned. "
-            "Defensive bots reinforce another own city with POST /v1/commands/move "
-            "and walk home with POST /v1/commands/recall."
-        ),
-    },
-    {
-        "action": "transfer_resources",
-        "reason": "No market or transfer endpoint. Resources move only by server production, upkeep, and loot.",
-    },
-)
+# Kept so older reports have a field. The public API now accepts every action.
+UNAVAILABLE_ACTIONS: tuple[dict[str, str], ...] = ()
 
 _BUILDINGS = tuple(sorted(BUILDINGS))
 _RESEARCH = tuple(sorted(RESEARCH))
@@ -112,7 +97,7 @@ def _plan_one(
     world_cities: list[dict[str, Any]],
 ) -> PlannedCommand:
     if profile == "aggressive":
-        return _aggressive(rng, tick, player_id, player_name, armies, world_cities)
+        return _aggressive(rng, tick, player_id, player_name, armies, cities, world_cities)
     if profile == "defensive":
         return _defensive(tick, player_id, player_name, armies, cities)
     if profile == "random":
@@ -128,13 +113,17 @@ def _aggressive(
     player_id: int,
     player_name: str,
     armies: list[dict[str, Any]],
+    cities: list[dict[str, Any]],
     world_cities: list[dict[str, Any]],
 ) -> PlannedCommand:
     ready = _garrisoned(armies)
     if not ready:
+        trained = _train_command(tick, player_id, player_name, "aggressive", cities, armies)
+        if trained is not None:
+            return trained
         note = "army is not garrisoned"
         if any(row.get("status") == "destroyed" for row in armies):
-            note = "army is destroyed; train_units has no endpoint"
+            note = "army is destroyed and no city can afford a militia"
         return PlannedCommand(tick, player_id, player_name, "aggressive", "skip", None, note=note)
     enemies = [
         city
@@ -185,8 +174,8 @@ def _defensive(
                 player_id,
                 player_name,
                 "defensive",
-                "move",
-                {"army_id": int(army["id"]), "destination_city_id": int(others[0]["id"]), "relocate": False},
+                "garrison",
+                {"army_id": int(army["id"]), "city_id": int(others[0]["id"])},
             )
     for army in _by_id(armies):
         if army.get("status") == "marching":
@@ -230,15 +219,30 @@ def _random(
                 options.append(("attack", int(army["id"]), int(city["id"])))
         for city in own:
             if int(city["id"]) != location:
+                options.append(("reinforce", int(army["id"]), int(city["id"])))
                 options.append(("move", int(army["id"]), int(city["id"])))
+                options.append(("garrison", int(army["id"]), int(city["id"])))
         if location != int(army["home_city_id"]):
             options.append(("recall", int(army["id"])))
+        for city in own:
+            if int(city["id"]) == location and _can_train(city, "militia", 1):
+                options.append(("train_units", int(city["id"]), "militia", 1, int(army["id"])))
     for army in _by_id(armies):
         if army.get("status") == "marching":
             options.append(("recall", int(army["id"])))
     for city in own:
         for building in _BUILDINGS:
             options.append(("build", int(city["id"]), building))
+        if _can_train(city, "militia", 1):
+            options.append(("train_units", int(city["id"]), "militia", 1, 0))
+    if len(own) >= 2:
+        source, destination = own[0], own[1]
+        if int(source.get("wood") or 0) >= 10:
+            options.append(("transfer_resources", int(source["id"]), int(destination["id"]), 10))
+    if len(own) < MAX_CITIES_PER_PLAYER:
+        payer = next((city for city in own if _can_afford(city, FOUND_CITY_COST)), None)
+        if payer is not None:
+            options.append(("found_city", int(payer["id"]), 300 + player_id, 10 + tick, f"Bot{player_id} Outpost"))
     for tech in _RESEARCH:
         options.append(("research", tech))
     options = sorted(set(options))
@@ -259,21 +263,41 @@ def _body_for(chosen: tuple[Any, ...]) -> dict[str, Any]:
     kind = chosen[0]
     if kind == "attack":
         return {"army_id": chosen[1], "target_city_id": chosen[2]}
-    if kind == "move":
+    if kind == "reinforce":
         return {"army_id": chosen[1], "destination_city_id": chosen[2], "relocate": False}
+    if kind == "move":
+        return {"army_id": chosen[1], "destination_city_id": chosen[2], "relocate": True}
+    if kind == "garrison":
+        return {"army_id": chosen[1], "city_id": chosen[2]}
     if kind == "recall":
         return {"army_id": chosen[1]}
     if kind == "build":
         return {"city_id": chosen[1], "building": chosen[2]}
     if kind == "research":
         return {"tech": chosen[1]}
+    if kind == "train_units":
+        body: dict[str, Any] = {"city_id": chosen[1], "unit_type": chosen[2], "count": chosen[3]}
+        if int(chosen[4]) > 0:
+            body["army_id"] = int(chosen[4])
+        return body
+    if kind == "transfer_resources":
+        return {
+            "source_city_id": chosen[1],
+            "destination_city_id": chosen[2],
+            "wood": chosen[3],
+            "food": 0,
+            "iron": 0,
+            "gold": 0,
+        }
+    if kind == "found_city":
+        return {"source_city_id": chosen[1], "x": chosen[2], "y": chosen[3], "name": chosen[4]}
     raise ValueError(f"unknown action {kind}")
 
 
 def _optimistic(armies: list[dict[str, Any]], command: PlannedCommand) -> None:
     """Keep later commands in the same tick from reusing an army that just marched."""
 
-    if command.action in {"attack", "move"} and command.body is not None:
+    if command.action in {"attack", "move", "reinforce", "garrison"} and command.body is not None:
         army_id = int(command.body["army_id"])
         for army in armies:
             if int(army["id"]) == army_id:
@@ -285,6 +309,39 @@ def _optimistic(armies: list[dict[str, Any]], command: PlannedCommand) -> None:
             if int(army["id"]) == army_id:
                 army["status"] = "returning"
                 army["location_city_id"] = None
+
+
+def _can_afford(city: dict[str, Any], costs: dict[str, int]) -> bool:
+    return all(int(city.get(name) or 0) >= int(amount) for name, amount in costs.items())
+
+
+def _can_train(city: dict[str, Any], unit_type: str, count: int) -> bool:
+    spec = UNIT_TRAINING[unit_type]
+    costs = {name: int(getattr(spec, name)) * count for name in ("wood", "food", "iron", "gold")}
+    return _can_afford(city, costs)
+
+
+def _train_command(
+    tick: int,
+    player_id: int,
+    player_name: str,
+    profile: str,
+    cities: list[dict[str, Any]],
+    armies: list[dict[str, Any]],
+) -> PlannedCommand | None:
+    for city in _by_id(cities):
+        if not _can_train(city, "militia", 1):
+            continue
+        garrisoned = [
+            army
+            for army in _garrisoned(armies)
+            if int(army["location_city_id"]) == int(city["id"])
+        ]
+        body: dict[str, Any] = {"city_id": int(city["id"]), "unit_type": "militia", "count": 1}
+        if garrisoned:
+            body["army_id"] = int(garrisoned[0]["id"])
+        return PlannedCommand(tick, player_id, player_name, profile, "train_units", body)
+    return None
 
 
 def _garrisoned(armies: list[dict[str, Any]]) -> list[dict[str, Any]]:

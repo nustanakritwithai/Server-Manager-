@@ -25,7 +25,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--ticks", type=int, default=None, help="Decision rounds. CI defaults to 4; each advances one game hour")
     parser.add_argument("--command-rate", type=int, default=DEFAULT_COMMAND_RATE, help="Commands each bot attempts per tick")
     parser.add_argument("--base-url", default=None, help="Staging API origin, for example http://127.0.0.1:8741")
-    parser.add_argument("--mode", required=True, choices=("ci", "staging"))
+    parser.add_argument("--mode", required=True, choices=("ci", "staging", "full"))
     parser.add_argument("--database-url", default=None, help="Defaults to SIMCORE_DATABASE_URL. Read-only checks, and the CI seed")
     parser.add_argument("--report-dir", default="sim-reports", help="Directory for report.json and report.md")
     parser.add_argument(

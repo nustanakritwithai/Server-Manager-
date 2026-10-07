@@ -14,8 +14,12 @@ They log in with `POST /v1/auth/dev-login` and then use only the player routes:
 | --- | --- |
 | Read self, cities, armies, the map, reports | `GET /v1/me`, `/v1/me/cities`, `/v1/me/armies`, `/v1/map/cities`, `/v1/me/reports` |
 | Attack | `POST /v1/commands/attack` |
-| Reinforce another city you own | `POST /v1/commands/move` |
+| Move (`relocate` true) and reinforce (`relocate` false) | `POST /v1/commands/move` |
 | Recall | `POST /v1/commands/recall` |
+| Garrison | `POST /v1/commands/garrison` |
+| Train | `POST /v1/commands/train` |
+| Found a city | `POST /v1/commands/found-city` |
+| Transfer resources between your own cities | `POST /v1/commands/transfer` |
 | Build | `POST /v1/commands/build` |
 | Research | `POST /v1/commands/research` |
 
@@ -23,11 +27,11 @@ Profiles, assigned by player order (not by the seed):
 
 | Profile | Behaviour |
 | --- | --- |
-| aggressive | Attacks an enemy city while the army is garrisoned |
-| defensive | Moves to the other own city (that is the reinforce/garrison action), then recalls home. Builds when the army is already marching |
-| random | Picks uniformly from the legal attacks, moves, recalls, builds, and research |
+| aggressive | Attacks an enemy city while the army is garrisoned. Trains a militia when the army is gone and a city can pay for it |
+| defensive | Garrisons the army in the other own city, then recalls home. Builds when the army is already marching |
+| random | Picks uniformly from the legal attacks, moves, reinforces, garrisons, recalls, trains, founds, transfers, builds, and research |
 
-There is no endpoint to recruit units, found a city, issue a separate garrison order, or transfer resources. Those are listed under **Actions with no endpoint** in every report. A destroyed army stays destroyed.
+The public API accepts train, found, garrison, and transfer. **Actions with no endpoint** is empty. A destroyed army can be replaced by training, which spawns a new garrisoned army when the paid city has none.
 
 The same `--seed` produces the same command sequence. The seed drives target choice and the random profile. It does not change the clock epoch or the profile assignment. CI also draws trace ids from that seed inside the simulator process, and sets the worker id to `simulator`, because the world snapshot checksum includes both. Staging talks to a server you already started, so it does not patch trace ids and does not claim the checksum will match a second run.
 
@@ -56,6 +60,21 @@ export SIMCORE_ENV=development
 python -m simcore.sim --mode ci --players 4 --seed 8741 --ticks 4 --command-rate 1 --report-dir sim-reports/a
 ```
 
+## Full mode
+
+`--mode full` is the completeness run. It uses the same frozen clock, seeded trace ids, and loopback database rules as CI, and it requires at least 4 players. Before the bot ticks it plays a fixed scene on the coverage roster (20 cavalry, 1 militia, 1 militia, 20 cavalry):
+
+- every public player endpoint and every command type, once on a valid path and once on a path that must be rejected
+- a rejected call is a 4xx and the following read of cities and armies matches the read taken before it
+- two garrisons depart together and are processed on the same worker tick
+- militia versus militia draws, militia versus cavalry loses, cavalry against an empty city wins and carries loot home
+
+The report's `coverage` object is **COMPLETE** only when every endpoint and command has both a tested valid path and a tested invalid path, and every invariant is PASS. Anything not exercised is `NOT TESTED`. A `NOT CHECKED` invariant is a gap, not a pass. Otherwise the verdict is **INCOMPLETE** and the `gaps` list says what is missing. The run result is FAIL when the verdict is not COMPLETE.
+
+```bash
+python -m simcore.sim --mode full --players 4 --seed 8741 --ticks 2 --command-rate 1 --report-dir sim-reports/full
+```
+
 `--ticks` is the number of decision rounds. With no `--duration`, each round then advances one game hour (`3600` seconds), which is enough for the seeded marches. `--duration` is the total game seconds; together with `--ticks` it sets the step to `duration / ticks`.
 
 A second run on another fresh database with the same seed must print the same `checksum=`.
@@ -63,14 +82,14 @@ A second run on another fresh database with the same seed must print the same `c
 ```bash
 createdb -h 127.0.0.1 -U simcore simcore_sim_b
 SIMCORE_DATABASE_URL=postgresql+psycopg://simcore:simcore@127.0.0.1:5432/simcore_sim_b \
-  python -m simcore.sim --mode ci --players 4 --seed 8741 --ticks 4 --command-rate 1 --report-dir sim-reports/b
+  python -m simcore.sim --mode full --players 4 --seed 8741 --ticks 2 --command-rate 1 --report-dir sim-reports/b
 ```
 
 Exit code `0` is PASS, `1` is a failed check or a runtime error, `2` is a safety refusal.
 
 ## GitHub Actions
 
-The Tests workflow has a `simulator` job on PostgreSQL 16. It runs the scenario above twice, on `simcore_sim` and `simcore_sim_b`, and fails the job if either report is not PASS or the snapshot checksums differ. The pytest job is unchanged and includes a smaller two-run check (`tests/test_simulator.py`). Reports are uploaded as the `simulator-reports` artifact.
+The Tests workflow has a `simulator` job on PostgreSQL 16. It runs `--mode full` twice, on `simcore_sim` and `simcore_sim_b`, with seed 8741, and fails the job if either report is not PASS, the coverage verdict is not COMPLETE, or the snapshot checksums differ. The pytest job is unchanged and includes a smaller two-run CI check (`tests/test_simulator.py`). Reports are uploaded as the `simulator-reports` artifact.
 
 The admin token in that job is the same development placeholder the pytest job already puts in the environment. It is not a production credential.
 
@@ -141,13 +160,13 @@ Thresholds, written down before the run is scored:
 - any trace verdict `FAIL` fails the run
 - `INCOMPLETE` fails the run when that trace has no pending event and no in-progress movement
 - `LEGACY` / `NOT TRACED` is reported and is not counted as `PASS`. A player command with a null `trace_id` fails CI, because this server stamps every new command
-- production and upkeep are `NOT CHECKED` on traces. The global ledger check covers them separately. `NOT CHECKED` is not `PASS`
-- global ledger: city stocks equal the seeded opening plus ledger deltas; loot taken equals loot deposited plus cargo still on a return plus loot recorded as lost when it was never deposited; no resource reason outside production, upkeep, and loot
+- `production_upkeep` is PASS when at least one trace's accrual rows recomputed and none failed. Traces with no accrual rows stay NOT CHECKED and are not called PASS. The invariant is NOT CHECKED only when nothing could be verified
+- global ledger: city stocks equal the seeded opening plus ledger deltas; loot taken equals loot deposited plus cargo still on a return plus loot recorded as lost when it was never deposited; allowed reasons are production, upkeep, loot, train, found_city, transfer_out, and transfer_in
 - no negative city stock or `balance_after`
-- no second effect for the same event, resource, and reason; no second live event of the same type on one movement; no event left `failed` or `processing`
-- army count, unit totals (alive plus battle casualties), and in-progress movements match the seed
+- no second effect for the same event, city, resource, and reason; no second live event of the same type on one movement; no event left `failed` or `processing`
+- army count is the seeded armies plus armies spawned by completed training; alive units plus casualties equal the seeded stacks plus completed training counts
 - the audit hash chain status is `PASS`
-- a monitoring check whose status is `CRITICAL` fails the run. `UNKNOWN` and `NOT INSTRUMENTED` are copied into the report under those names. Monitoring is read before the verification snapshot is written, so `game.last_snapshot` is `UNKNOWN` on a fresh database. That is not a pass and it does not fail the run
+- a monitoring check whose status is `CRITICAL` fails the run. `UNKNOWN` and `NOT INSTRUMENTED` are copied into the report under those names. CI reads monitoring before the verification snapshot, so `game.last_snapshot` is `UNKNOWN` on a fresh database. That is not a pass and it does not fail the CI result. Full mode writes a snapshot first so that check can be OK, which the COMPLETE verdict requires
 - end-of-run event lag is `0` in CI (staging allows the monitoring critical lag, 120 seconds)
 - peak lag in CI may be as large as one clock step, not two
 - client p95 latency at most 5000 ms, average at most 2000 ms

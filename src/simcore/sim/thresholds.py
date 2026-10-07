@@ -38,7 +38,7 @@ STAGING_END_LAG_SECONDS_MAX = 120
 def threshold_document(*, mode: str, step_seconds: int | None) -> dict[str, Any]:
     """The bars this run will be scored against."""
 
-    if mode == "ci":
+    if mode in {"ci", "full"}:
         step = CI_DEFAULT_STEP_SECONDS if step_seconds is None else step_seconds
         end_lag = 0
         max_lag = step + LAG_STEP_SLACK_SECONDS
@@ -61,5 +61,5 @@ def threshold_document(*, mode: str, step_seconds: int | None) -> dict[str, Any]
         "max_event_lag_seconds_max": max_lag,
         "api_p95_ms_max": API_P95_MS_MAX,
         "api_avg_ms_max": API_AVG_MS_MAX,
-        "snapshot_checksum_required": mode == "ci",
+        "snapshot_checksum_required": mode in {"ci", "full"},
     }

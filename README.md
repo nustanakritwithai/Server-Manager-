@@ -73,6 +73,22 @@ curl -s http://127.0.0.1:8741/v1/me/reports -H 'authorization: Bearer dev:1'
 curl -s http://127.0.0.1:8741/v1/me/cities -H 'authorization: Bearer dev:1'
 ```
 
+Player commands (all under `POST /v1/commands/…`, bearer token required):
+
+| Path | Body |
+| --- | --- |
+| `/move` | `army_id`, `destination_city_id`, optional `relocate` |
+| `/attack` | `army_id`, `target_city_id` |
+| `/recall` | `army_id` |
+| `/garrison` | `army_id`, `city_id` |
+| `/train` | `city_id`, `unit_type`, `count` (1–100), optional `army_id` |
+| `/found-city` | `source_city_id`, `x`, `y`, `name` |
+| `/transfer` | `source_city_id`, `destination_city_id`, `wood`, `food`, `iron`, `gold` |
+| `/build` | `city_id`, `building` |
+| `/research` | `tech` |
+
+Reads: `GET /v1/time`, `/v1/me`, `/v1/me/cities`, `/v1/me/cities/{id}`, `/v1/map/cities`, `/v1/me/armies`, `/v1/me/reports`, `/v1/me/reports/{id}`.
+
 Useful admin and CLI entry points:
 
 | Action | HTTP | CLI |
@@ -138,7 +154,7 @@ The admin Map tab is a read-only god view: every city, every army, and every in-
 
 ## Monitoring
 
-`GET /v1/admin/monitoring` is a read-only picture of the process right now: event queue, worker heartbeat, API counters, database probe, disk free, and the game clock. Each check is `OK`, `WARN`, `CRITICAL`, `UNKNOWN`, or `NOT INSTRUMENTED`, with the measured value, the threshold, and a reason. `UNKNOWN` is not a pass. CPU and memory are `NOT INSTRUMENTED`. `GET /health` stays `{"status":"ok"}` and does not include these checks.
+`GET /v1/admin/monitoring` is a read-only picture of the process right now: event queue, worker heartbeat, API counters, database probe, disk free, host CPU, host memory, and the game clock. Each check is `OK`, `WARN`, `CRITICAL`, `UNKNOWN`, or `NOT INSTRUMENTED`, with the measured value, the threshold, and a reason. `UNKNOWN` is not a pass. Host CPU and memory come from psutil. A failed reading is `UNKNOWN` with a null value. `GET /health` stays `{"status":"ok"}` and does not include these checks.
 
 The worker writes a heartbeat after every tick, in its own transaction, so a stalled or stopped worker shows up as `STALE` and then `DOWN` with the age of the last tick. `GET /v1/admin/monitoring/history?metric=&window=` returns samples kept for trends (default window `24h`). The worker loop and the API sampler write those samples about every 60 seconds and delete rows older than 7 days. API request counts and latency live in the API process and reset when that process restarts; the payload says so.
 

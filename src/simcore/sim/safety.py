@@ -92,21 +92,21 @@ def ensure_safe(
     """Raise SafetyError unless this target is a local test or an acknowledged live world."""
 
     reasons = production_reasons(base_url=base_url, database_url=database_url, env_name=env_name)
-    if mode == "ci":
+    if mode in {"ci", "full"}:
         if not database_url:
             raise SafetyError("CI mode needs SIMCORE_DATABASE_URL or --database-url")
         host, name = database_parts(database_url)
         lowered = name.lower()
         if host not in _LOOPBACK:
-            reasons.append(f"CI mode only runs against a loopback database, not {host!r}")
+            reasons.append(f"{mode} mode only runs against a loopback database, not {host!r}")
         if not _is_simulator_database(lowered):
             reasons.append(
-                f"CI mode only seeds a database whose name contains 'test' or '_sim' (got {name!r})"
+                f"{mode} mode only seeds a database whose name contains 'test' or '_sim' (got {name!r})"
             )
         if base_url is not None:
             api_host = base_host(base_url)
             if api_host not in _LOOPBACK:
-                reasons.append(f"CI mode serves the API on loopback, not {api_host!r}")
+                reasons.append(f"{mode} mode serves the API on loopback, not {api_host!r}")
     else:
         if not base_url:
             raise SafetyError("staging mode needs --base-url")

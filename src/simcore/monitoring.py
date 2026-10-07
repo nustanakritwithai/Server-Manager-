@@ -76,6 +76,8 @@ HISTORY_METRICS: tuple[str, ...] = (
     "disk_free_bytes",
     "db_rtt_ms",
     "worker_heartbeat_age_seconds",
+    "host_cpu_percent",
+    "host_memory_percent",
 )
 
 HISTORY_WINDOWS: dict[str, int] = {
@@ -587,25 +589,144 @@ def _api_checks(settings: Settings) -> list[dict[str, Any]]:
     return checks
 
 
-def _host_gaps() -> list[dict[str, Any]]:
-    return [
-        _check(
-            "host.cpu",
-            NOT_INSTRUMENTED,
-            value=None,
-            unit=None,
-            reason="CPU use is not measured by this server.",
-            affects_overall=False,
-        ),
-        _check(
-            "host.memory",
-            NOT_INSTRUMENTED,
-            value=None,
-            unit=None,
-            reason="Memory use is not measured by this server.",
-            affects_overall=False,
-        ),
-    ]
+# A blocking interval so the first sample is a real measurement. interval=None
+# returns 0.0, which would be a fake value. The result is reused for a second
+# so the dashboard and the monitoring report do not each block.
+_HOST_INTERVAL_SECONDS = 0.1
+_HOST_CACHE_SECONDS = 1.0
+_host_cache_lock = threading.Lock()
+_host_cache: dict[str, Any] = {"at": 0.0, "cpu": None, "memory": None, "error": None}
+
+
+def measure_host() -> tuple[float | None, float | None, str | None]:
+    """Return ``(cpu percent, memory percent, error)``.
+
+    ``error`` is set when psutil could not measure, or the numbers were not
+    finite. The percents are then None. This never invents a 0.
+    """
+
+    now = time.monotonic()
+    with _host_cache_lock:
+        cached_at = float(_host_cache["at"])
+        if now - cached_at < _HOST_CACHE_SECONDS and _host_cache["error"] is None and _host_cache["cpu"] is not None:
+            return _host_cache["cpu"], _host_cache["memory"], None
+    error: str | None = None
+    cpu: float | None = None
+    memory: float | None = None
+    try:
+        import psutil
+
+        cpu = float(psutil.cpu_percent(interval=_HOST_INTERVAL_SECONDS))
+        memory = float(psutil.virtual_memory().percent)
+    except Exception as exc:
+        error = exc.__class__.__name__
+    if error is None and (cpu is None or memory is None or not math.isfinite(cpu) or not math.isfinite(memory)):
+        error = "non-finite"
+        cpu = None
+        memory = None
+    with _host_cache_lock:
+        _host_cache["at"] = time.monotonic()
+        _host_cache["cpu"] = cpu
+        _host_cache["memory"] = memory
+        _host_cache["error"] = error
+    return cpu, memory, error
+
+
+def host_dashboard_gaps() -> dict[str, str]:
+    """Dashboard gaps. Measured host checks are omitted. A failed read is UNKNOWN."""
+
+    cpu, memory, error = measure_host()
+    gaps: dict[str, str] = {}
+    if cpu is None:
+        gaps["host_cpu"] = UNKNOWN
+    if memory is None:
+        gaps["host_memory"] = UNKNOWN
+    if error and not gaps:
+        gaps["host_cpu"] = UNKNOWN
+        gaps["host_memory"] = UNKNOWN
+    return gaps
+
+
+def _host_checks(settings: Settings) -> list[dict[str, Any]]:
+    cpu, memory, error = measure_host()
+    cpu_threshold = _high(settings.monitor_cpu_warn_percent, settings.monitor_cpu_critical_percent, "percent")
+    memory_threshold = _high(
+        settings.monitor_memory_warn_percent,
+        settings.monitor_memory_critical_percent,
+        "percent",
+    )
+    checks: list[dict[str, Any]] = []
+    if cpu is None:
+        checks.append(
+            _check(
+                "host.cpu",
+                UNKNOWN,
+                value=None,
+                unit="percent",
+                reason=(
+                    f"CPU percent could not be measured ({error or 'unavailable'}). "
+                    "This is not a pass and it is not a zero."
+                ),
+                affects_overall=False,
+                threshold=cpu_threshold,
+                history_metric="host_cpu_percent",
+            )
+        )
+    else:
+        status = _judge_high(cpu, settings.monitor_cpu_warn_percent, settings.monitor_cpu_critical_percent)
+        checks.append(
+            _check(
+                "host.cpu",
+                status,
+                value=cpu,
+                unit="percent",
+                reason=(
+                    f"Host CPU is {_num(cpu)}% over a {_HOST_INTERVAL_SECONDS}s sample; "
+                    f"warn at {settings.monitor_cpu_warn_percent}%, "
+                    f"critical at {settings.monitor_cpu_critical_percent}%."
+                ),
+                affects_overall=True,
+                threshold=cpu_threshold,
+                history_metric="host_cpu_percent",
+                detail={"interval_seconds": _HOST_INTERVAL_SECONDS, "source": "psutil.cpu_percent"},
+            )
+        )
+    if memory is None:
+        checks.append(
+            _check(
+                "host.memory",
+                UNKNOWN,
+                value=None,
+                unit="percent",
+                reason=(
+                    f"Memory percent could not be measured ({error or 'unavailable'}). "
+                    "This is not a pass and it is not a zero."
+                ),
+                affects_overall=False,
+                threshold=memory_threshold,
+                history_metric="host_memory_percent",
+            )
+        )
+    else:
+        status = _judge_high(memory, settings.monitor_memory_warn_percent, settings.monitor_memory_critical_percent)
+        checks.append(
+            _check(
+                "host.memory",
+                status,
+                value=memory,
+                unit="percent",
+                reason=(
+                    f"Host memory is {_num(memory)}% of virtual memory; "
+                    f"warn at {settings.monitor_memory_warn_percent}%, "
+                    f"critical at {settings.monitor_memory_critical_percent}%."
+                ),
+                affects_overall=True,
+                threshold=memory_threshold,
+                history_metric="host_memory_percent",
+                detail={"source": "psutil.virtual_memory"},
+            )
+        )
+    return checks
 
 
 def _commit_check() -> dict[str, Any]:
@@ -1367,7 +1488,7 @@ def collect_report(
     if include_api:
         checks.extend(_api_checks(settings))
     checks.append(_disk_check(settings))
-    checks.extend(_host_gaps())
+    checks.extend(_host_checks(settings))
     checks.append(_commit_check())
     commit = git_commit()
     api_snap = api_metrics.snapshot() if include_api else None

@@ -12,6 +12,7 @@ class Mission:
     MOVE = "move"
     ATTACK = "attack"
     RETURN = "return"
+    GARRISON = "garrison"
 
 
 class MovementStatus:
@@ -25,6 +26,9 @@ class EventType:
     ARMY_RETURN = "ARMY_RETURN"
     BUILD_COMPLETE = "BUILD_COMPLETE"
     RESEARCH_COMPLETE = "RESEARCH_COMPLETE"
+    TRAIN_COMPLETE = "TRAIN_COMPLETE"
+    TRANSFER_ARRIVE = "TRANSFER_ARRIVE"
+    CITY_FOUNDED = "CITY_FOUNDED"
 
 
 class EventStatus:
@@ -40,6 +44,10 @@ class Reason:
     UPKEEP = "upkeep"
     LOOT_LOST = "loot_lost"
     LOOT_GAINED = "loot_gained"
+    TRAIN = "train"
+    FOUND_CITY = "found_city"
+    TRANSFER_OUT = "transfer_out"
+    TRANSFER_IN = "transfer_in"
 
 
 class SnapshotReason:
