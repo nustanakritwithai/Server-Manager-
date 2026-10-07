@@ -91,6 +91,8 @@ Useful admin and CLI entry points:
 | Event detail | `GET /v1/admin/events/{id}` | |
 | Players, cities, movements | `GET /v1/admin/players`, `/cities`, `/movements` | |
 | Battle reports | `GET /v1/admin/reports` | |
+| Event trace | `GET /v1/admin/trace/{trace_id}`, `GET /v1/admin/trace` | |
+| Audit log | `GET /v1/admin/audit` | |
 
 Admin routes are on unless `SIMCORE_ENV=production`. In production set `SIMCORE_ENABLE_ADMIN=1` to turn them back on.
 
@@ -109,7 +111,7 @@ A snapshot is a checksummed copy of the simulation used to debug, replay, test, 
 7. Start the worker.
 8. Accept player commands again.
 
-If a step fails before that replacement commits, the previous world is still there and commands are opened again when it still matches the safety snapshot. The checksum is `sha256:` plus the SHA-256 of a canonical JSON document. Create and restore use the same function. Details, the covered tables, and the operator escape hatch are in [docs/SNAPSHOTS.md](docs/SNAPSHOTS.md).
+If a step fails before that replacement commits, the previous world is still there and commands are opened again when it still matches the safety snapshot. The checksum is `sha256:` plus the SHA-256 of a canonical JSON document. Create and restore use the same function. The captured document is schema version 2: it includes `player_commands` and the nullable `trace_id` columns, and it does not include the audit log. Details, the covered tables, and the operator escape hatch are in [docs/SNAPSHOTS.md](docs/SNAPSHOTS.md).
 
 ```bash
 curl -s -X POST http://127.0.0.1:8741/v1/admin/snapshots \
@@ -118,6 +120,14 @@ curl -s -X POST http://127.0.0.1:8741/v1/admin/snapshots \
 curl -s -X POST http://127.0.0.1:8741/v1/admin/snapshots/1/restore \
   -H 'content-type: application/json' -H 'x-admin-token: dev-admin' -d '{"confirm":true}'
 ```
+
+## Audit and event trace
+
+An accepted command gets a `trace_id`. That id is copied onto the movement, the events (including the walk home), the battle report, and the ledger rows that command applies. `GET /v1/admin/trace/{trace_id}` returns the timeline and a server-side verdict: `PASS`, `FAIL` (with reasons), or `INCOMPLETE` while the army is still out. `INCOMPLETE` is not `PASS`. Anything the server did not score is `NOT CHECKED`. Rows with a null `trace_id` are `LEGACY` / `NOT TRACED`; the API does not guess a link for them.
+
+`GET /v1/admin/audit` is the append-only log of admin actions (login success and failure, logout, revoke-all, snapshot create, inspect, restore, clock advance, run-event, worker tick) plus a hash-chain check of the whole table. Passwords, session tokens, and password hashes are not stored. There is no update or delete route.
+
+The admin page has an Event trace view and an Audit log tab. They render the server JSON. Details are in [docs/AUDIT_TRACE.md](docs/AUDIT_TRACE.md). No new environment variable is required.
 
 ## Run without Docker
 

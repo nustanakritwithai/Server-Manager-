@@ -14,10 +14,12 @@ ISO-8601 strings (offset +00:00) before encoding. Lists keep primary-key order.
 Dict key order does not matter because sort_keys is on.
 
 The document covers schema_version, world_state (id, offset_seconds,
-world_version), and every column of players, cities, armies, movements, events,
-battle_reports, and transactions. It does not cover snapshot rows, commands_open,
-or worker_paused. world_time on the snapshot row is metadata (the simulated
-clock at capture) and is not hashed; offset_seconds is the hashed clock state.
+world_version), and every column of players, cities, armies, player_commands,
+movements, events, battle_reports, and transactions. Nullable trace_id columns
+are part of that document. It does not cover snapshot rows, the audit log,
+commands_open, or worker_paused. world_time on the snapshot row is metadata
+(the simulated clock at capture) and is not hashed; offset_seconds is the
+hashed clock state.
 
 Create and restore both call world_checksum, which hashes capture_document.
 
@@ -70,6 +72,7 @@ from simcore.models import (
     Event,
     Movement,
     Player,
+    PlayerCommand,
     Transaction,
     WorldSnapshot,
     WorldSnapshotPayload,
@@ -90,6 +93,7 @@ _ENTITY_MODELS: tuple[tuple[str, type], ...] = (
     ("players", Player),
     ("cities", City),
     ("armies", Army),
+    ("player_commands", PlayerCommand),
     ("movements", Movement),
     ("events", Event),
     ("battle_reports", BattleReport),
@@ -100,6 +104,7 @@ _DELETE_ORDER: tuple[type, ...] = (
     BattleReport,
     Event,
     Movement,
+    PlayerCommand,
     Army,
     City,
     Player,
@@ -197,7 +202,7 @@ def world_checksum(session: Session) -> str:
 def _lock_world_tables(session: Session) -> None:
     session.execute(
         text(
-            "LOCK TABLE world_state, players, cities, armies, movements, events, "
+            "LOCK TABLE world_state, players, cities, armies, player_commands, movements, events, "
             "battle_reports, transactions IN SHARE ROW EXCLUSIVE MODE"
         )
     )

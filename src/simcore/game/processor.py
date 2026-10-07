@@ -147,6 +147,7 @@ def _resolve_attack(session: Session, event: Event, movement: Movement, now: dat
             idempotency_key=f"event:{event.id}:loot_lost:{resource}",
             source_event_id=event.id,
             now=now,
+            trace_id=event.trace_id,
         )
         if txn is None or txn.delta != -amount:
             raise GameError("loot could not be taken in full", code="invalid_event")
@@ -168,6 +169,7 @@ def _resolve_attack(session: Session, event: Event, movement: Movement, now: dat
         defender_casualties=stacks_to_payload(result.defender_casualties),
         defender_resources={name: amount for name, amount in resources},
         loot=loot,
+        trace_id=event.trace_id,
         rounds=[
             {
                 "round": entry.round_index,
@@ -206,6 +208,7 @@ def _resolve_attack(session: Session, event: Event, movement: Movement, now: dat
         idempotency_key=f"return:{event.id}",
         loot=loot,
         cause_event_id=event.id,
+        trace_id=event.trace_id,
     )
 
 
@@ -253,6 +256,7 @@ def _process_army_return(session: Session, event: Event, now: datetime) -> None:
             idempotency_key=f"event:{event.id}:loot_gained:{resource}",
             source_event_id=event.id,
             now=now,
+            trace_id=event.trace_id,
         )
         if txn is not None and txn.delta != amount and txn.idempotency_key == f"event:{event.id}:loot_gained:{resource}":
             # A previous attempt already stored a different delta. Keep it.
@@ -315,6 +319,7 @@ def _ensure_return_home(
         idempotency_key=f"return:{event.id}",
         loot=loot,
         cause_event_id=event.id,
+        trace_id=event.trace_id,
     )
 
 
@@ -335,6 +340,7 @@ def _process_build(session: Session, event: Event, now: datetime) -> None:
         reason="build",
         source_event_id=event.id,
         now=now,
+        trace_id=event.trace_id,
     ):
         return
     updated = dict(city.buildings or {})
@@ -363,6 +369,7 @@ def _process_research(session: Session, event: Event, now: datetime) -> None:
         reason="research",
         source_event_id=event.id,
         now=now,
+        trace_id=event.trace_id,
     ):
         return
     updated = dict(player.research or {})
@@ -384,6 +391,7 @@ def _record_effect(
     reason: str,
     source_event_id: int,
     now: datetime,
+    trace_id: str | None = None,
 ) -> bool:
     existing = session.scalar(select(Transaction).where(Transaction.idempotency_key == key))
     if existing is not None:
@@ -400,6 +408,7 @@ def _record_effect(
                 reason=reason,
                 source_event_id=source_event_id,
                 idempotency_key=key,
+                trace_id=trace_id,
                 created_at=now,
             )
         )

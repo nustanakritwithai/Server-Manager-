@@ -20,7 +20,7 @@ Each snapshot row has:
 - `snapshot_id`
 - `created_at` (wall clock, UTC, when the row was written)
 - `world_time` (simulated clock at capture: base clock + `offset_seconds`)
-- `schema_version` (currently `1`)
+- `schema_version` (currently `2`)
 - `world_version` (monotonic counter on `world_state`)
 - `checksum`
 - `reason`: `AUTO`, `MANUAL`, or `SAFETY`
@@ -33,13 +33,14 @@ The payload is canonical JSON in `world_snapshot_payloads.body`. It includes eve
 - `players`
 - `cities`
 - `armies`
-- `movements`
-- `events` (pending, processing, completed, failed, cancelled)
-- `battle_reports`
-- `transactions`
+- `player_commands` (accepted commands and their `trace_id`)
+- `movements` (including nullable `trace_id`)
+- `events` (pending, processing, completed, failed, cancelled, including nullable `trace_id`)
+- `battle_reports` (including nullable `trace_id`)
+- `transactions` (including nullable `trace_id`)
 - `world_state` fields `id`, `offset_seconds`, and `world_version`
 
-It does not include other snapshot rows. It also does not include the operational gates `commands_open` and `worker_paused`. Those gates are how restore pauses the world; they are not part of the world you roll back to. `world_time` is metadata on the snapshot row. The hashed clock state is `offset_seconds`.
+It does not include other snapshot rows or the `audit_log`. It also does not include the operational gates `commands_open` and `worker_paused`. Those gates are how restore pauses the world; they are not part of the world you roll back to. `world_time` is metadata on the snapshot row. The hashed clock state is `offset_seconds`. Schema version 2 is the document that includes command traces. A snapshot written at version 1 stays listed and is not restored by this server.
 
 Rows are ordered by primary key. A successful restore puts those primary keys back and moves each id sequence to `MAX(id)`.
 

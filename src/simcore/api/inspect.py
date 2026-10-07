@@ -58,6 +58,7 @@ def event_record(event: Event) -> dict[str, object]:
         "idempotency_key": event.idempotency_key,
         "payload": event.payload,
         "movement_id": event.movement_id,
+        "trace_id": event.trace_id,
         "created_at": event.created_at,
     }
 
@@ -82,6 +83,7 @@ def movement_record(movement: Movement) -> dict[str, object]:
         "loot_iron": movement.loot_iron,
         "loot_gold": movement.loot_gold,
         "cause_event_id": movement.cause_event_id,
+        "trace_id": movement.trace_id,
         "created_at": movement.created_at,
         "resolved_at": movement.resolved_at,
     }
@@ -97,6 +99,7 @@ def transaction_record(row: Transaction) -> dict[str, object]:
         "balance_after": row.balance_after,
         "reason": row.reason,
         "source_event_id": row.source_event_id,
+        "trace_id": row.trace_id,
         "idempotency_key": row.idempotency_key,
         "created_at": row.created_at,
     }

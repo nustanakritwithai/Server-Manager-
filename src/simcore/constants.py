@@ -64,7 +64,8 @@ class SnapshotStatus:
 
 # Bump when the captured world document changes shape. Older snapshots stay
 # listed, but this server will refuse to restore a different schema_version.
-SNAPSHOT_SCHEMA_VERSION = 1
+# Version 2 adds nullable trace_id columns and the player_commands table.
+SNAPSHOT_SCHEMA_VERSION = 2
 
 
 RESOURCES: tuple[str, ...] = ("wood", "food", "iron", "gold")

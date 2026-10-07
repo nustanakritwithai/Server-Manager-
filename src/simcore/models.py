@@ -130,6 +130,7 @@ class Movement(Base):
     loot_iron: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     loot_gold: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     cause_event_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    trace_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -152,6 +153,7 @@ class Event(Base):
     locked_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    trace_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
@@ -176,6 +178,7 @@ class BattleReport(Base):
     defender_resources: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     loot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     rounds: Mapped[list[Any]] = mapped_column(JSONB, nullable=False)
+    trace_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -193,7 +196,58 @@ class Transaction(Base):
     reason: Mapped[str] = mapped_column(String(40), nullable=False)
     source_event_id: Mapped[int | None] = mapped_column(ForeignKey("events.id"), nullable=True, index=True)
     idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    trace_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PlayerCommand(Base):
+    """One accepted player intent. trace_id is null only for rows that were never traced.
+
+    Follow-on work (the walk home, its event, the battle, the ledger) reuses this
+    trace_id. It is not a second command.
+    """
+
+    __tablename__ = "player_commands"
+    __table_args__ = (
+        Index("ix_player_commands_player_id", "player_id"),
+        Index("ix_player_commands_army_id", "army_id"),
+        Index("uq_player_commands_trace_id", "trace_id", unique=True),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    trace_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False)
+    command_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    army_id: Mapped[int | None] = mapped_column(ForeignKey("armies.id"), nullable=True)
+    target: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AuditLog(Base):
+    """Append-only record of admin and system actions. Not part of the world snapshot.
+
+    row_hash is sha256(prev_hash + canonical JSON of the other fields). There is
+    no update or delete API. Passwords, tokens, session secrets, and password
+    hashes are not written here.
+    """
+
+    __tablename__ = "audit_log"
+    __table_args__ = (
+        Index("ix_audit_log_occurred_at", "occurred_at"),
+        Index("ix_audit_log_action", "action"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    actor: Mapped[str] = mapped_column(String(80), nullable=False)
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    target: Mapped[str] = mapped_column(String(200), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_ip: Mapped[str] = mapped_column(String(64), nullable=False)
+    result: Mapped[str] = mapped_column(String(20), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prev_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    row_hash: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
 class WorldSnapshot(Base):

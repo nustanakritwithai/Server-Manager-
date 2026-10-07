@@ -7,7 +7,7 @@ from datetime import datetime
 
 from sqlalchemy import func, select
 
-from simcore.constants import EventStatus
+from simcore.constants import SNAPSHOT_SCHEMA_VERSION, EventStatus
 from simcore.db import get_sessionmaker
 from simcore.models import (
     Army,
@@ -141,7 +141,8 @@ def test_snapshot_api_validation(client, frozen) -> None:
     body = created.json()
     assert body["reason"] == "MANUAL"
     assert body["status"] == "READY"
-    assert body["schema_version"] == 1
+    assert body["schema_version"] == SNAPSHOT_SCHEMA_VERSION
+    assert SNAPSHOT_SCHEMA_VERSION == 2
     assert body["summary"]["players"] == 2
     assert body["summary"]["battle_reports"] == 0
     snap_id = body["snapshot_id"]
@@ -431,7 +432,15 @@ def test_battle_report_and_march_roundtrip_through_restore(client, frozen) -> No
     session = _open()
     try:
         document = capture_document(session)
+        assert document["schema_version"] == SNAPSHOT_SCHEMA_VERSION
         assert document["battle_reports"][0]["winner"] == "attacker"
+        assert "player_commands" in document
+        fought_trace = document["movements"][0]["trace_id"]
+        assert fought_trace
+        assert all(row["trace_id"] == fought_trace for row in document["movements"])
+        assert all(row["trace_id"] == fought_trace for row in document["events"])
+        assert document["battle_reports"][0]["trace_id"] == fought_trace
+        assert document["player_commands"][0]["trace_id"] == fought_trace
         assert checksum_text(canonical_json(document)) == fought["checksum"]
     finally:
         session.close()
@@ -468,3 +477,13 @@ def test_battle_report_and_march_roundtrip_through_restore(client, frozen) -> No
     assert after_battle["armies"] == fought["armies"]
     assert after_battle["cities"] == fought["cities"]
     assert after_battle["offset"] == fought["offset"]
+    session = _open()
+    try:
+        restored_doc = capture_document(session)
+        restored_trace = restored_doc["player_commands"][0]["trace_id"]
+        assert restored_trace
+        assert restored_doc["battle_reports"][0]["trace_id"] == restored_trace
+        assert all(row["trace_id"] == restored_trace for row in restored_doc["movements"])
+        assert all(row["trace_id"] == restored_trace for row in restored_doc["events"])
+    finally:
+        session.close()

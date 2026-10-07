@@ -41,12 +41,14 @@ def truncate() -> None:
             text(
                 """
                 TRUNCATE TABLE
+                  audit_log,
                   world_snapshot_payloads,
                   world_snapshots,
                   transactions,
                   battle_reports,
                   events,
                   movements,
+                  player_commands,
                   armies,
                   cities,
                   players

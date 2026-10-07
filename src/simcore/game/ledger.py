@@ -27,6 +27,7 @@ def apply_resource_delta(
     idempotency_key: str,
     source_event_id: int | None,
     now: datetime,
+    trace_id: str | None = None,
 ) -> Transaction | None:
     if resource not in RESOURCES:
         raise ValueError(f"unknown resource {resource}")
@@ -52,6 +53,7 @@ def apply_resource_delta(
             reason=reason,
             source_event_id=source_event_id,
             idempotency_key=idempotency_key,
+            trace_id=trace_id,
             created_at=now,
         )
         session.add(txn)
