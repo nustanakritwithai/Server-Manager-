@@ -496,3 +496,75 @@ def test_windows_scripts_call_pg_dump_and_do_not_embed_secrets() -> None:
         assert "CHANGE_ME" not in script
         assert "ya29." not in script
         assert "POSTGRES_SUPER_PASSWORD=" not in script
+    assert "drill result PASS" in restore
+    assert "drill result FAIL" in restore
+    assert "$drillReport" in restore
+    assert "write-status" not in restore
+
+
+def test_powershell_switch_parameters_are_not_assigned_objects() -> None:
+    """Windows PowerShell 5.1 variable names ignore case.
+
+    ``[switch]$Drill`` and ``$drill = [pscustomobject]...`` are the same variable.
+    That assignment throws: PSCustomObject cannot convert to SwitchParameter.
+    """
+
+    import re
+
+    deploy = ROOT / "deploy" / "windows"
+    declaration = re.compile(r"\[switch\]\s*\$(\w+)", re.IGNORECASE)
+    assignment = re.compile(r"(?<![\w.])\$(\w+)\s*=(?!=)")
+    boolean_value = re.compile(r"^\$?(?:true|false|[01])\b", re.IGNORECASE)
+    offenders: list[str] = []
+    for path in sorted(deploy.glob("*.ps1")):
+        switches = {match.group(1).casefold() for match in declaration.finditer(path.read_text(encoding="utf-8"))}
+        if not switches:
+            continue
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            for match in assignment.finditer(line):
+                if match.group(1).casefold() not in switches:
+                    continue
+                rhs = line.split("=", 1)[1].strip()
+                if boolean_value.match(rhs):
+                    continue
+                offenders.append(f"{path.name}:{lineno}: {stripped}")
+    assert offenders == []
+
+
+def test_pwsh_switch_assignment_rejects_pscustomobject() -> None:
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh is not installed")
+    script = r"""
+$ErrorActionPreference = "Stop"
+function Invoke-Probe {
+    param([switch]$Drill)
+    $drillReport = [pscustomobject]@{ ExitCode = 0; Stdout = "PASS" }
+    if ($Drill -and $drillReport.Stdout -eq "PASS") { "KEPT" } else { "LOST" }
+}
+$kept = Invoke-Probe -Drill
+$rejected = $false
+try {
+    function Invoke-Bad {
+        param([switch]$Drill)
+        $drill = [pscustomobject]@{ ExitCode = 0 }
+    }
+    Invoke-Bad -Drill | Out-Null
+} catch {
+    if ($_.Exception.Message -match "SwitchParameter") { $rejected = $true } else { throw }
+}
+if ($kept -ne "KEPT") { throw "switch was overwritten" }
+if (-not $rejected) { throw "PSCustomObject assignment onto a switch was accepted" }
+Write-Output "PASS"
+"""
+    completed = subprocess.run(
+        [pwsh, "-NoProfile", "-Command", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip().splitlines()[-1] == "PASS"

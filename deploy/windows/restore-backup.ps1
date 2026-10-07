@@ -282,13 +282,27 @@ try {
     Remove-Item -LiteralPath $restoreOut, $restoreErr -Force -ErrorAction SilentlyContinue
     Write-BackupLog "pg_restore loaded $target"
 
-    $drill = Invoke-SimcoreBackupPython -ArgumentList @("drill", "--manifest", $manifestPath, "--database-name", $target)
-    Write-BackupLog $drill.Stdout.Trim()
-    $first = ""
-    foreach ($line in ($drill.Stdout -split "`r?`n")) {
-        if (-not [string]::IsNullOrWhiteSpace($line)) { $first = $line.Trim(); break }
+    # $Drill is the script switch. PowerShell variable names are not case-sensitive,
+    # so a result named $drill would be assigned onto that [switch] and Windows
+    # PowerShell 5.1 refuses the PSCustomObject. A drill is not an off-site backup
+    # and does not rewrite backup-status.json.
+    $drillReport = Invoke-SimcoreBackupPython -ArgumentList @("drill", "--manifest", $manifestPath, "--database-name", $target)
+    $verdict = ""
+    foreach ($line in ([string]$drillReport.Stdout -split "`r?`n")) {
+        if (-not [string]::IsNullOrWhiteSpace($line)) { $verdict = $line.Trim(); break }
     }
-    $passed = ($drill.ExitCode -eq 0 -and $first -eq "PASS")
+    $passed = ($drillReport.ExitCode -eq 0 -and $verdict -eq "PASS")
+    if ($passed) {
+        Write-BackupLog "drill result PASS"
+    } else {
+        Write-BackupLog "drill result FAIL"
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$drillReport.Stdout)) {
+        Write-BackupLog ([string]$drillReport.Stdout).Trim()
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$drillReport.Stderr)) {
+        Write-BackupLog ([string]$drillReport.Stderr).Trim() "ERROR"
+    }
     if (-not $passed) {
         Fail-Restore 5 "Drill checks returned FAIL for $target. This is not a successful restore."
     }
