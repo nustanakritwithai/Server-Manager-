@@ -134,6 +134,64 @@ def test_attack_trace_passes_after_the_army_returns(client, frozen) -> None:
     assert found.json()["legacy"] == []
 
 
+def test_move_trace_passes_after_the_army_is_recalled_home(client, frozen) -> None:
+    """Arriving, then leaving on a later recall, is still an arrival for this trace."""
+
+    from simcore.models import City
+
+    now = frozen.now()
+    create_scenario(now, rate=0, stock=500)
+    session = get_sessionmaker()()
+    try:
+        camp = City(
+            player_id=1,
+            name="Camp",
+            x=0,
+            y=2,
+            wood=100,
+            food=100,
+            iron=100,
+            gold=100,
+            wood_rate=0,
+            food_rate=0,
+            iron_rate=0,
+            gold_rate=0,
+            buildings={},
+            last_updated=now,
+            created_at=now,
+        )
+        session.add(camp)
+        session.commit()
+        camp_id = camp.id
+    finally:
+        session.close()
+
+    alice = _login(client, "Alice")
+    moved = client.post(
+        "/v1/commands/move",
+        json={"army_id": 1, "destination_city_id": camp_id},
+        headers=alice,
+    )
+    assert moved.status_code == 200, moved.text
+    trace_id = moved.json()["trace_id"]
+    advanced = client.post("/v1/admin/clock/advance", json={"seconds": 1200}, headers=ADMIN)
+    assert advanced.status_code == 200, advanced.text
+    tick = client.post("/v1/admin/worker/tick", headers=ADMIN)
+    assert tick.status_code == 200, tick.text
+    recalled = client.post("/v1/commands/recall", json={"army_id": 1}, headers=alice)
+    assert recalled.status_code == 200, recalled.text
+    advanced = client.post("/v1/admin/clock/advance", json={"seconds": 1200}, headers=ADMIN)
+    assert advanced.status_code == 200, advanced.text
+    tick = client.post("/v1/admin/worker/tick", headers=ADMIN)
+    assert tick.status_code == 200, tick.text
+
+    traced = client.get(f"/v1/admin/trace/{trace_id}", headers=ADMIN)
+    assert traced.status_code == 200, traced.text
+    body = traced.json()
+    assert body["verdict"] == "PASS", body["reasons"]
+    assert _check(body, "army_resolution")["status"] == "PASS"
+
+
 def test_trace_is_incomplete_while_the_army_is_en_route(client, frozen) -> None:
     create_scenario(frozen.now(), rate=0, stock=1000)
     trace_id = _attack(client)

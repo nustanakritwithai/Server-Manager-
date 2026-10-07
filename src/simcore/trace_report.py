@@ -342,7 +342,16 @@ def _army_resolution(
                 and army.status == ArmyStatus.GARRISONED
                 and army.location_city_id == movement.destination_city_id
             )
-            if not arrived and not _army_destroyed(army):
+            # A later command may march the army away. Arrival still happened if
+            # that later leg starts at this destination.
+            left_after_arrival = session.scalar(
+                select(Movement.id).where(
+                    Movement.army_id == movement.army_id,
+                    Movement.id > movement.id,
+                    Movement.origin_city_id == movement.destination_city_id,
+                )
+            )
+            if not arrived and not _army_destroyed(army) and left_after_arrival is None:
                 fail.append(f"army {movement.army_id} movement {movement.id} completed without arriving")
     elif command.command_type == "recall":
         if not movements:
