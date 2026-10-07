@@ -116,6 +116,22 @@ _DELETE_ORDER: tuple[type, ...] = (
 )
 _SEQUENCE_TABLES: tuple[str, ...] = tuple(name for name, _model in _ENTITY_MODELS)
 
+# Summary keys are the entity lists that schema version wrote. Version 2 added
+# player_commands. Inspect must score a snapshot against those keys. Using
+# today's list makes an older, intact snapshot look like summary_ok=False.
+_SUMMARY_TABLES: dict[int, tuple[str, ...]] = {
+    1: (
+        "players",
+        "cities",
+        "armies",
+        "movements",
+        "events",
+        "battle_reports",
+        "transactions",
+    ),
+    2: tuple(name for name, _model in _ENTITY_MODELS),
+}
+
 
 def canonical_json(document: object) -> str:
     """Stable JSON. Object keys are sorted at every level; list order is kept."""
@@ -194,8 +210,39 @@ def capture_document(session: Session) -> dict[str, Any]:
     return document
 
 
+def summary_tables(schema_version: object) -> tuple[str, ...] | None:
+    """Entity names whose lengths that schema version stored in ``summary``."""
+
+    if isinstance(schema_version, bool) or not isinstance(schema_version, int):
+        return None
+    return _SUMMARY_TABLES.get(schema_version)
+
+
 def summarize(document: dict[str, Any]) -> dict[str, int]:
-    return {name: len(document[name]) for name, _model in _ENTITY_MODELS}
+    """Counts for a document this server just captured.
+
+    The document's schema_version selects the keys. A version this server
+    does not write, or a document missing one of that version's lists, is
+    not a summary.
+    """
+
+    tables = summary_tables(document.get("schema_version"))
+    if tables is None or any(not isinstance(document.get(name), list) for name in tables):
+        raise GameError("snapshot document does not match its schema version", code="snapshot_schema")
+    return {name: len(document[name]) for name in tables}
+
+
+def summary_counts(document: dict[str, Any]) -> dict[str, int] | None:
+    """Recompute a stored snapshot's summary, or None when it cannot be scored.
+
+    None means the document is not a known schema version or is missing a
+    list that version captured. It does not mean the counts were zero.
+    """
+
+    tables = summary_tables(document.get("schema_version"))
+    if tables is None or any(not isinstance(document.get(name), list) for name in tables):
+        return None
+    return {name: len(document[name]) for name in tables}
 
 
 def world_checksum(session: Session) -> str:
@@ -298,8 +345,8 @@ def inspect_snapshot(session: Session, snapshot_id: int) -> dict[str, object]:
             parsed = None
         if isinstance(parsed, dict):
             canonical_ok = canonical_json(parsed) == body
-            if all(name in parsed and isinstance(parsed[name], list) for name, _model in _ENTITY_MODELS):
-                counts = summarize(parsed)
+            if parsed.get("schema_version") == row.schema_version:
+                counts = summary_counts(parsed)
             world_state = parsed.get("world_state")
     stored = dict(row.summary) if isinstance(row.summary, dict) else {}
     return {
@@ -308,7 +355,7 @@ def inspect_snapshot(session: Session, snapshot_id: int) -> dict[str, object]:
         "checksum_ok": payload_checksum == row.checksum and payload is not None,
         "canonical_ok": canonical_ok,
         "counts": counts,
-        "summary_ok": counts == stored and counts is not None,
+        "summary_ok": counts is not None and counts == stored,
         "world_state": world_state,
     }
 

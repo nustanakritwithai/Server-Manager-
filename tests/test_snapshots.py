@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import copy
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import func, select
 
-from simcore.constants import SNAPSHOT_SCHEMA_VERSION, EventStatus
+from simcore.backup import build_manifest, collect_facts, drill_session
+from simcore.constants import SNAPSHOT_SCHEMA_VERSION, EventStatus, SnapshotReason, SnapshotStatus
 from simcore.db import get_sessionmaker
 from simcore.models import (
     Army,
@@ -22,7 +23,7 @@ from simcore.models import (
     WorldSnapshotPayload,
     WorldState,
 )
-from simcore.snapshot import canonical_json, capture_document, checksum_text, world_checksum
+from simcore.snapshot import canonical_json, capture_document, checksum_text, summary_tables, world_checksum
 from simcore.worker import run_once
 from tests.conftest import ADMIN
 from tests.world import create_scenario
@@ -544,3 +545,164 @@ def test_snapshot_inspect_sees_the_row_as_soon_as_create_returns(db: None, froze
     finally:
         server.should_exit = True
         thread.join(timeout=5)
+
+
+# Schema version 1 stored these lengths and no player_commands key.
+_V1_TABLES = (
+    "players",
+    "cities",
+    "armies",
+    "movements",
+    "events",
+    "battle_reports",
+    "transactions",
+)
+
+
+def _v1_snapshot_document() -> dict[str, object]:
+    """A document written the way schema version 1 captured the world."""
+
+    return {
+        "schema_version": 1,
+        "world_state": {"id": 1, "offset_seconds": 0, "world_version": 3},
+        "players": [
+            {
+                "id": 1,
+                "name": "Ada",
+                "research": {},
+                "created_at": "2026-01-01T00:00:00+00:00",
+            }
+        ],
+        "cities": [],
+        "armies": [],
+        "movements": [{"id": 1, "status": "in_progress"}],
+        "events": [],
+        "battle_reports": [],
+        "transactions": [],
+    }
+
+
+def _store_snapshot(session, *, document: dict, summary: dict[str, int], schema_version: int) -> int:
+    body = canonical_json(document)
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    row = WorldSnapshot(
+        created_at=now,
+        world_time=now,
+        schema_version=schema_version,
+        world_version=int(document["world_state"]["world_version"]),
+        checksum=checksum_text(body),
+        reason=SnapshotReason.MANUAL,
+        status=SnapshotStatus.READY,
+        summary=summary,
+        error=None,
+    )
+    session.add(row)
+    session.flush()
+    session.add(WorldSnapshotPayload(snapshot_id=row.id, body=body))
+    session.commit()
+    return int(row.id)
+
+
+def test_schema_v1_snapshot_summary_matches_when_checked_by_current_code(client, frozen) -> None:
+    """A dump can contain a snapshot written before player_commands existed.
+
+    The payload checksum still matches. The summary must be scored with
+    version 1's tables. A wrong count, or a version 2 document missing
+    player_commands, stays a failure. Restoring that snapshot is still refused.
+    """
+
+    assert summary_tables(1) == _V1_TABLES
+    assert summary_tables(2) == (
+        "players",
+        "cities",
+        "armies",
+        "player_commands",
+        "movements",
+        "events",
+        "battle_reports",
+        "transactions",
+    )
+    assert "player_commands" not in _V1_TABLES
+
+    create_scenario(frozen.now(), rate=RATE, stock=STOCK)
+    document = _v1_snapshot_document()
+    summary = {name: len(document[name]) for name in _V1_TABLES}
+    assert "player_commands" not in summary
+    session = _open()
+    try:
+        snap_id = _store_snapshot(session, document=document, summary=summary, schema_version=1)
+    finally:
+        session.close()
+
+    inspected = client.get(f"/v1/admin/snapshots/{snap_id}/inspect", headers=ADMIN)
+    assert inspected.status_code == 200, inspected.text
+    body = inspected.json()
+    assert body["schema_version"] == 1
+    assert body["checksum_ok"] is True
+    assert body["summary_ok"] is True
+    assert body["counts"] == summary
+    assert "player_commands" not in body["counts"]
+
+    session = _open()
+    try:
+        facts = collect_facts(session)
+        facts["database"] = "simcore_test"
+        manifest = build_manifest(
+            taken_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
+            size_bytes=10,
+            database="simcore_test",
+            alembic_revision=facts["alembic_revision"],
+            git_commit="abcdef1234567890abcdef1234567890abcdef12",
+            pg_dump_version="pg_dump (PostgreSQL) 16",
+            sha256="ab" * 32,
+            row_counts=facts["row_counts"],
+            world_checksum_value=facts["world_checksum"],
+        )
+        drilled = drill_session(session, manifest)
+        assert drilled["result"] == "PASS", drilled
+        snapshot_check = next(item for item in drilled["checks"] if item["name"] == "snapshot.checksum")
+        assert snapshot_check["ok"] is True
+        assert snapshot_check["detail"] == f"snapshot {snap_id} checksum_ok=True summary_ok=True"
+
+        row = session.get(WorldSnapshot, snap_id)
+        assert row is not None
+        row.summary = {**summary, "players": summary["players"] + 1}
+        session.commit()
+        lied = drill_session(session, manifest)
+        assert lied["result"] == "FAIL"
+        lied_check = next(item for item in lied["checks"] if item["name"] == "snapshot.checksum")
+        assert lied_check["ok"] is False
+        assert "summary_ok=False" in lied_check["detail"]
+        again = client.get(f"/v1/admin/snapshots/{snap_id}/inspect", headers=ADMIN)
+        assert again.json()["checksum_ok"] is True
+        assert again.json()["summary_ok"] is False
+
+        row.summary = summary
+        row.schema_version = 2
+        session.commit()
+        mismatched = client.get(f"/v1/admin/snapshots/{snap_id}/inspect", headers=ADMIN)
+        assert mismatched.json()["summary_ok"] is False
+        row.schema_version = 1
+        session.commit()
+
+        captured = capture_document(session)
+        assert captured["schema_version"] == 2
+        del captured["player_commands"]
+        broken_summary = {name: len(captured[name]) for name in _V1_TABLES}
+        broken_id = _store_snapshot(session, document=captured, summary=broken_summary, schema_version=2)
+    finally:
+        session.close()
+
+    broken = client.get(f"/v1/admin/snapshots/{broken_id}/inspect", headers=ADMIN)
+    assert broken.status_code == 200, broken.text
+    assert broken.json()["checksum_ok"] is True
+    assert broken.json()["summary_ok"] is False
+    assert broken.json()["counts"] is None
+
+    refused = client.post(
+        f"/v1/admin/snapshots/{snap_id}/restore",
+        json={"confirm": True},
+        headers=ADMIN,
+    )
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["error"]["code"] == "snapshot_schema"
