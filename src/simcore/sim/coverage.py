@@ -407,21 +407,26 @@ class _Script:
         self._require_winner(bot2, "draw")
         self.combat["draw"] = True
         self._catch_pending()
-        self._accept(
+        camp_id = int(camp[bot3["name"]]["id"])
+        reinforce = self._accept(
             bot3,
             "reinforce",
             "/v1/commands/move",
             {
                 "army_id": army[bot3["name"]],
-                "destination_city_id": int(camp[bot3["name"]]["id"]),
+                "destination_city_id": camp_id,
                 "relocate": False,
             },
         )
-        self._catch_pending()
+        arrived = self._await_event(int(reinforce["event_id"]))
 
         reinforced = self._army_row(bot3)
-        if int(reinforced.get("location_city_id") or 0) != int(camp[bot3["name"]]["id"]):
-            raise RuntimeError("reinforce did not garrison the army in its camp")
+        if int(reinforced.get("location_city_id") or 0) != camp_id:
+            raise RuntimeError(
+                "reinforce event "
+                f"{arrived['id']} completed as {arrived['status']} but the army is "
+                f"{reinforced.get('status')} at city {reinforced.get('location_city_id')}, not camp {camp_id}"
+            )
         if int(reinforced["home_city_id"]) != int(home[bot3["name"]]["id"]):
             raise RuntimeError("reinforce changed the home city")
 
@@ -824,6 +829,16 @@ class _Script:
         self._remember_drain(self.drain(self.api))
 
     def _catch_pending(self) -> None:
+        """Drain every pending event. An empty tick is not "caught up".
+
+        The clock moves at most once toward the soonest due time. If that
+        event is still in the future afterwards, or a due event is still
+        pending after a tick that processed nothing, catch-up stops with the
+        event id. It does not advance again and it does not sleep.
+        """
+
+        advanced_event: int | None = None
+        last = "no pending event was read"
         for _ in range(40):
             now = _server_now(self.api, _bearer(self.actors[0]))
             status, body = self.api.json(
@@ -837,16 +852,79 @@ class _Script:
             events = body.get("events") or []
             if not events:
                 return
-            due = _parse_time(events[0]["due_at"])
+            event = events[0]
+            event_id = int(event["id"])
+            due = _parse_time(event["due_at"])
+            last = (
+                f"event {event_id} {event.get('type')} status {event.get('status')} "
+                f"due {event.get('due_at')} server {now.isoformat()}"
+            )
             if due > now:
+                if advanced_event == event_id:
+                    raise RuntimeError(f"coverage catch-up did not reach {last}")
                 seconds = max(1, math.ceil((due - now).total_seconds()))
                 self.advance(self.api, seconds)
+                advanced_event = event_id
+                continue
+            advanced_event = None
             self.max_lag = max(self.max_lag, self.sample_lag(self.api))
             drained = self.drain(self.api)
             self._remember_drain(drained)
             if not drained["processed"] and not drained["failed"]:
-                return
-        raise RuntimeError("coverage catch-up did not finish")
+                raise RuntimeError(f"coverage catch-up left a due event pending: {last}")
+        raise RuntimeError(f"coverage catch-up did not finish: {last}")
+
+    def _await_event(self, event_id: int) -> dict[str, Any]:
+        """Advance once to this event's due time and drain until it is completed."""
+
+        advanced = False
+        last = f"event {event_id} was not read"
+        for _ in range(40):
+            event = self._admin_event(event_id)
+            state = str(event.get("status") or "")
+            last = (
+                f"event {event_id} {event.get('type')} status {state} "
+                f"due {event.get('due_at')} error {event.get('last_error')}"
+            )
+            if state == "completed":
+                return event
+            if state in {"failed", "cancelled"}:
+                raise RuntimeError(f"coverage event did not complete: {last}")
+            now = _server_now(self.api, _bearer(self.actors[0]))
+            due = _parse_time(event["due_at"])
+            if due > now:
+                if advanced:
+                    raise RuntimeError(
+                        f"coverage event was still in the future after one clock advance: {last}; "
+                        f"server {now.isoformat()}"
+                    )
+                seconds = max(1, math.ceil((due - now).total_seconds()))
+                self.advance(self.api, seconds)
+                advanced = True
+                continue
+            advanced = False
+            self.max_lag = max(self.max_lag, self.sample_lag(self.api))
+            drained = self.drain(self.api)
+            self._remember_drain(drained)
+            event = self._admin_event(event_id)
+            if str(event.get("status") or "") == "completed":
+                return event
+            if not drained["processed"] and not drained["failed"]:
+                raise RuntimeError(
+                    f"coverage event was due and the worker processed nothing: {last}; "
+                    f"server {now.isoformat()}"
+                )
+        raise RuntimeError(f"coverage event was not completed within the catch-up bound: {last}")
+
+    def _admin_event(self, event_id: int) -> dict[str, Any]:
+        status, body = self.api.json(
+            "GET",
+            f"/v1/admin/events/{event_id}",
+            headers=self.api.admin_headers,
+        )
+        if status != 200 or not isinstance(body, dict) or not isinstance(body.get("event"), dict):
+            raise RuntimeError(f"event {event_id} HTTP {status}: {body}")
+        return body["event"]
 
     def _tick_once(self) -> list[int]:
         status, body = self.api.json(
