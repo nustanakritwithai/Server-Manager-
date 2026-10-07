@@ -14,7 +14,7 @@ from simcore.errors import GameError
 from simcore.game.commands import attack_city, move_army, queue_build, queue_research, recall_army
 from simcore.game.economy import accrue_city
 from simcore.models import Army, BattleReport, City, Event, Player
-from simcore.present import army_body, city_body, movement_body
+from simcore.present import army_body, city_body, movement_body, report_body
 
 router = APIRouter(prefix="/v1")
 
@@ -148,7 +148,7 @@ def my_reports(
         .where(or_(BattleReport.attacker_player_id == player.id, BattleReport.defender_player_id == player.id))
         .order_by(BattleReport.id)
     ).all()
-    return {"reports": [_report_body(report) for report in reports]}
+    return {"reports": [report_body(report) for report in reports]}
 
 
 @router.get("/me/reports/{report_id}", tags=["reports"])
@@ -162,7 +162,7 @@ def my_report(
         raise GameError("report not found", status_code=404, code="not_found")
     if player.id not in (report.attacker_player_id, report.defender_player_id):
         raise GameError("that report belongs to another battle", status_code=403, code="forbidden")
-    return _report_body(report)
+    return report_body(report)
 
 
 @router.post("/commands/move", tags=["commands"])
@@ -232,26 +232,4 @@ def _timed_event_body(event: Event) -> dict[str, object]:
     }
 
 
-def _report_body(report: BattleReport) -> dict[str, object]:
-    return {
-        "id": report.id,
-        "event_id": report.event_id,
-        "movement_id": report.movement_id,
-        "attacker_player_id": report.attacker_player_id,
-        "defender_player_id": report.defender_player_id,
-        "attacker_army_id": report.attacker_army_id,
-        "defender_city_id": report.defender_city_id,
-        "seed": report.seed,
-        "winner": report.winner,
-        "attacker_before": report.attacker_before,
-        "defender_before": report.defender_before,
-        "attacker_remaining": report.attacker_remaining,
-        "defender_remaining": report.defender_remaining,
-        "attacker_casualties": report.attacker_casualties,
-        "defender_casualties": report.defender_casualties,
-        "defender_resources": report.defender_resources,
-        "loot": report.loot,
-        "rounds": report.rounds,
-        "created_at": report.created_at,
-    }
 

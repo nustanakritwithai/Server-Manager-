@@ -87,6 +87,10 @@ Useful admin and CLI entry points:
 | Create a world snapshot | `POST /v1/admin/snapshots` | |
 | List / inspect snapshots | `GET /v1/admin/snapshots`, `GET /v1/admin/snapshots/{id}/inspect` | |
 | Restore a snapshot | `POST /v1/admin/snapshots/{id}/restore` | |
+| Dashboard counts | `GET /v1/admin/dashboard` | |
+| Event detail | `GET /v1/admin/events/{id}` | |
+| Players, cities, movements | `GET /v1/admin/players`, `/cities`, `/movements` | |
+| Battle reports | `GET /v1/admin/reports` | |
 
 Admin routes are on unless `SIMCORE_ENV=production`. In production set `SIMCORE_ENABLE_ADMIN=1` to turn them back on.
 
@@ -152,6 +156,8 @@ python3 -m http.server 8080
 ```
 
 Open http://127.0.0.1:8080 and point the API field at http://127.0.0.1:8741. Development CORS allows that origin plus `https://nustanakritwithai.github.io`.
+
+The Admin Control Center is a separate page at http://127.0.0.1:8080/admin/ (on GitHub Pages: `…/Server-Manager-/admin/`). It reads the same `web/config.js` API URL as the game client. The operator types `X-Admin-Token` into the page; the script keeps that token in memory for the tab and does not write it to `localStorage` or `sessionStorage`. Refreshing the page clears it. The page calls the admin API and shows the response. Snapshot restore is select, inspect, warning, typed snapshot id, then `POST` with `confirm: true`. World mutation stays on the server.
 
 ## Deploy on the Windows VPS
 

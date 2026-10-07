@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Admin Control Center — Simcore</title>
+    <link rel="stylesheet" href="admin.css" />
+  </head>
+  <body>
+    <header class="top">
+      <div>
+        <p class="eyebrow">Simcore · server is source of truth</p>
+        <h1>Admin Control Center</h1>
+      </div>
+      <a class="text-link" href="../">Game test client</a>
+    </header>
+
+    <section class="panel session">
+      <form id="session-form" class="stack">
+        <div class="row">
+          <label class="grow">
+            <span class="label">API base URL</span>
+            <input id="api-url" type="url" autocomplete="off" spellcheck="false" required />
+          </label>
+          <label class="grow">
+            <span class="label">X-Admin-Token</span>
+            <input id="admin-token" type="password" autocomplete="off" spellcheck="false" />
+          </label>
+        </div>
+        <p class="muted">The token stays in this page’s memory. Refresh clears it. This page does not write it to browser storage. The API still checks the header.</p>
+        <div class="row">
+          <button type="submit">Connect</button>
+          <button type="button" id="lock-btn" class="ghost">Clear token</button>
+          <button type="button" id="api-reset" class="ghost">Default API URL</button>
+          <button type="button" id="refresh-btn" class="ghost">Refresh view</button>
+        </div>
+      </form>
+      <p id="session-status" class="status">Token is not loaded.</p>
+    </section>
+
+    <nav class="nav" aria-label="Admin sections">
+      <button type="button" data-nav="dashboard">Dashboard</button>
+      <button type="button" data-nav="snapshots">Snapshots</button>
+      <button type="button" data-nav="events">Events</button>
+      <button type="button" data-nav="world">World</button>
+      <button type="button" data-nav="battles">Battles</button>
+      <button type="button" data-nav="ledger">Ledger</button>
+      <button type="button" data-nav="actions">Actions</button>
+    </nav>
+
+    <p id="global-error" class="error" hidden></p>
+
+    <main>
+      <section data-view="dashboard" class="panel">
+        <div class="panel-head">
+          <h2>Dashboard</h2>
+          <p class="muted">Health comes from <span class="mono">/health</span> and <span class="mono">/health/ready</span>. Counts come from <span class="mono">GET /v1/admin/dashboard</span>. Missing probes stay UNKNOWN or NOT INSTRUMENTED.</p>
+        </div>
+        <div id="dash-health" class="stats"></div>
+        <div id="dash-counts" class="stats"></div>
+        <div id="dash-events" class="stats"></div>
+        <div id="dash-world"></div>
+        <div id="dash-snapshot"></div>
+        <div id="dash-gaps"></div>
+      </section>
+
+      <section data-view="snapshots" class="panel" hidden>
+        <div class="panel-head">
+          <h2>Snapshot control</h2>
+          <p class="muted">Create, list, get, and inspect use the Phase 2 admin API. Restore sends <span class="mono">confirm: true</span> only after inspection and an explicit confirmation.</p>
+        </div>
+        <div class="row">
+          <button type="button" id="snap-manual">Create MANUAL</button>
+          <button type="button" id="snap-refresh" class="ghost">Reload</button>
+        </div>
+        <div id="snap-table"></div>
+        <div id="snap-inspect"></div>
+        <form id="restore-form" class="danger-box">
+          <h3>Restore</h3>
+          <p>This replaces the live simulation. The server writes a SAFETY snapshot, pauses the worker, checks the checksum, and applies the payload. This page does not perform those steps itself.</p>
+          <label class="check">
+            <input id="restore-ack" type="checkbox" />
+            <span>I inspected this snapshot and want the server to roll the live world back to it.</span>
+          </label>
+          <label>
+            <span class="label">Type the snapshot id</span>
+            <input id="restore-typed" inputmode="numeric" autocomplete="off" />
+          </label>
+          <button type="submit" id="restore-go" class="danger" disabled>Restore snapshot</button>
+        </form>
+        <pre id="snap-result" class="raw"></pre>
+      </section>
+
+      <section data-view="events" class="panel" hidden>
+        <div class="panel-head">
+          <h2>Event inspector</h2>
+          <p class="muted">Filter is a query to the server. Detail links movement, army, battle, and ledger rows when those relations exist.</p>
+        </div>
+        <form id="event-filter" class="row">
+          <label>
+            <span class="label">Status</span>
+            <select id="event-status">
+              <option value="">all</option>
+              <option value="pending">pending</option>
+              <option value="processing">processing</option>
+              <option value="completed">completed</option>
+              <option value="failed">failed</option>
+              <option value="cancelled">cancelled</option>
+            </select>
+          </label>
+          <button type="submit">Apply</button>
+        </form>
+        <div id="event-table"></div>
+        <div id="event-detail"></div>
+      </section>
+
+      <section data-view="world" class="panel" hidden>
+        <div class="panel-head">
+          <h2>World inspector</h2>
+          <p class="muted">City resources are the stored columns. This page does not accrue production.</p>
+        </div>
+        <div class="subnav">
+          <button type="button" data-world="players">Players</button>
+          <button type="button" data-world="cities">Cities</button>
+          <button type="button" data-world="armies">Armies</button>
+          <button type="button" data-world="movements">Movements</button>
+        </div>
+        <form id="movement-filter" class="row" hidden>
+          <label>
+            <span class="label">Movement status</span>
+            <select id="movement-status">
+              <option value="">all</option>
+              <option value="in_progress">in_progress</option>
+              <option value="completed">completed</option>
+              <option value="cancelled">cancelled</option>
+            </select>
+          </label>
+          <button type="submit">Apply</button>
+        </form>
+        <div id="world-list"></div>
+        <div id="world-detail"></div>
+      </section>
+
+      <section data-view="battles" class="panel" hidden>
+        <div class="panel-head">
+          <h2>Battle reports</h2>
+          <p class="muted">Inspect and debug. No combat playback.</p>
+        </div>
+        <div id="battle-table"></div>
+        <div id="battle-detail"></div>
+      </section>
+
+      <section data-view="ledger" class="panel" hidden>
+        <div class="panel-head">
+          <h2>Transaction ledger</h2>
+          <p class="muted">Read-only. Rows are append-only on the server. This page has no edit control.</p>
+        </div>
+        <form id="ledger-filter" class="row">
+          <label>
+            <span class="label">Player id</span>
+            <input id="ledger-player" inputmode="numeric" autocomplete="off" />
+          </label>
+          <label>
+            <span class="label">City id</span>
+            <input id="ledger-city" inputmode="numeric" autocomplete="off" />
+          </label>
+          <label>
+            <span class="label">Source event id</span>
+            <input id="ledger-event" inputmode="numeric" autocomplete="off" />
+          </label>
+          <label>
+            <span class="label">Resource</span>
+            <input id="ledger-resource" autocomplete="off" />
+          </label>
+          <button type="submit">Apply</button>
+        </form>
+        <div id="ledger-table"></div>
+      </section>
+
+      <section data-view="actions" class="panel" hidden>
+        <div class="panel-head">
+          <h2>Admin actions</h2>
+          <p class="muted">Each world-mutating call needs a checked warning. Snapshot restore stays on the Snapshots page.</p>
+        </div>
+        <form id="clock-form" class="warn-box">
+          <h3>Advance clock</h3>
+          <p>Moves simulated time forward. The server rejects a rewind. A zero step still bumps <span class="mono">world_version</span>.</p>
+          <div class="row">
+            <label><span class="label">Hours</span><input id="clock-hours" type="number" min="0" value="0" /></label>
+            <label><span class="label">Minutes</span><input id="clock-minutes" type="number" min="0" value="0" /></label>
+            <label><span class="label">Seconds</span><input id="clock-seconds" type="number" min="0" value="0" /></label>
+          </div>
+          <label class="check"><input id="clock-ack" type="checkbox" /><span>I understand this changes world time.</span></label>
+          <button type="submit" id="clock-go" class="danger" disabled>Advance clock</button>
+        </form>
+        <form id="run-form" class="warn-box">
+          <h3>Run one event</h3>
+          <p>Processes that event now through the server command, even if it is not due yet.</p>
+          <label><span class="label">Event id</span><input id="run-id" inputmode="numeric" autocomplete="off" required /></label>
+          <label class="check"><input id="run-ack" type="checkbox" /><span>I understand this mutates the world if the event applies.</span></label>
+          <button type="submit" id="run-go" class="danger" disabled>Run event</button>
+        </form>
+        <form id="tick-form" class="warn-box">
+          <h3>Worker tick</h3>
+          <p>Drains due events on the real worker path. Each event commits in its own transaction.</p>
+          <label><span class="label">Limit</span><input id="tick-limit" type="number" min="1" max="200" value="50" /></label>
+          <label class="check"><input id="tick-ack" type="checkbox" /><span>I understand due events will be applied.</span></label>
+          <button type="submit" id="tick-go" class="danger" disabled>Run worker tick</button>
+        </form>
+        <p class="muted">Create and restore snapshots from the Snapshots section.</p>
+        <pre id="action-result" class="raw"></pre>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <p>The browser displays state and sends admin commands. Snapshot restore, event processing, combat, and the ledger stay on the server.</p>
+    </footer>
+
+    <script src="../config.js"></script>
+    <script src="admin.js"></script>
+  </body>
+</html>

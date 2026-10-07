@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from simcore.constants import ArmyStatus, MovementStatus
 from simcore.game.travel import interpolate, travel_progress
-from simcore.models import Army, City, Event, Movement, Player
+from simcore.models import Army, BattleReport, City, Event, Movement, Player
 
 
 def _position(city_id: int | None, x: float, y: float) -> dict[str, float | int | None]:
@@ -65,6 +65,32 @@ def army_body(session: Session, army: Army, now: datetime) -> dict[str, object]:
         "movement": None if movement is None else movement_body(movement, event_for_movement(session, movement)),
     }
     return body
+
+
+def report_body(report: BattleReport) -> dict[str, object]:
+    """Battle report JSON. Shared by the player client and the admin inspector."""
+
+    return {
+        "id": report.id,
+        "event_id": report.event_id,
+        "movement_id": report.movement_id,
+        "attacker_player_id": report.attacker_player_id,
+        "defender_player_id": report.defender_player_id,
+        "attacker_army_id": report.attacker_army_id,
+        "defender_city_id": report.defender_city_id,
+        "seed": report.seed,
+        "winner": report.winner,
+        "attacker_before": report.attacker_before,
+        "defender_before": report.defender_before,
+        "attacker_remaining": report.attacker_remaining,
+        "defender_remaining": report.defender_remaining,
+        "attacker_casualties": report.attacker_casualties,
+        "defender_casualties": report.defender_casualties,
+        "defender_resources": report.defender_resources,
+        "loot": report.loot,
+        "rounds": report.rounds,
+        "created_at": report.created_at,
+    }
 
 
 def city_body(session: Session, city: City, *, include_resources: bool) -> dict[str, object]:
