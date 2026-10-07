@@ -65,6 +65,11 @@ def main(argv: list[str] | None = None) -> None:
     )
     print(f"report: {config.report_dir / 'report.md'}")
     if result != "PASS":
+        for item in payload.get("failed_invariants") or []:
+            print(f"failed {item.get('invariant')}: {item.get('detail')}", file=sys.stderr)
+        coverage = payload.get("coverage") or {}
+        for gap in (coverage.get("gaps") or [])[:12]:
+            print(f"coverage gap: {gap}", file=sys.stderr)
         raise SystemExit(1)
 
 

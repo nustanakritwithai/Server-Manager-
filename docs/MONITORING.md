@@ -57,7 +57,8 @@ Liveness uses the newest heartbeat's age against the wall clock:
 | Age | Liveness | Status |
 | --- | --- | --- |
 | No row | UNKNOWN | UNKNOWN |
-| Negative (tick time is ahead of this clock) | UNKNOWN | UNKNOWN |
+| Up to 2s ahead (host and database clocks disagree) | UP | OK |
+| More than 2s ahead of this clock | UNKNOWN | UNKNOWN |
 | Up to the warn threshold (default 15s) | UP | OK |
 | Past warn, up to critical (default 60s) | STALE | WARN |
 | Past critical | DOWN | CRITICAL |
@@ -107,7 +108,7 @@ If the probe fails, queue, heartbeat, and game checks that need the database are
 
 ### Not measured
 
-`host.cpu` is `psutil.cpu_percent` over a 0.1 second blocking sample, so the first reading is a real measurement and not the 0.0 that a non-blocking call returns. `host.memory` is `psutil.virtual_memory().percent`. Both are percents, higher is worse. Defaults are warn at 90 and critical at 101, so a saturated 100% sample is WARN. A sample at or above the critical setting is CRITICAL. If psutil raises or the number is not finite, the status is UNKNOWN, the value is null, and nothing is invented. The reading is cached for about a second so the dashboard and the monitoring report share it. `build.commit` is NOT INSTRUMENTED when `SIMCORE_GIT_COMMIT` is unset and `git rev-parse HEAD` does not return a SHA. The package version is still reported.
+`host.cpu` is `psutil.cpu_percent` over a 0.1 second blocking sample, so the first reading is a real measurement and not the 0.0 that a non-blocking call returns. `host.memory` is `psutil.virtual_memory().percent`. Both are percents, higher is worse. Defaults are warn at 90 and critical at 101, so a saturated 100% sample is WARN. A sample at or above the critical setting is CRITICAL. If psutil raises or the number is not finite, the status is UNKNOWN, the value is null, and nothing is invented. The reading is cached for about a second so the dashboard and the monitoring report share it. `build.commit` is NOT INSTRUMENTED when `SIMCORE_GIT_COMMIT` is unset and `git rev-parse HEAD` does not return a SHA. That rev-parse marks the checkout as a safe directory, so a runner-owned clone still resolves. The package version is still reported.
 
 ## History and retention
 

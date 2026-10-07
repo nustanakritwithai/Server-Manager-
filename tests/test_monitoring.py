@@ -44,6 +44,29 @@ def _session():
     return get_sessionmaker()()
 
 
+def test_git_commit_marks_the_checkout_safe(monkeypatch) -> None:
+    import simcore.monitoring as monitoring
+
+    seen: list[list[str]] = []
+
+    class Completed:
+        returncode = 0
+        stdout = "abc1234\n"
+
+    def fake_run(args, **kwargs):
+        seen.append(list(args))
+        return Completed()
+
+    monkeypatch.delenv("SIMCORE_GIT_COMMIT", raising=False)
+    monkeypatch.setattr(monitoring.subprocess, "run", fake_run)
+    monitoring.clear_commit_cache()
+    try:
+        assert monitoring.git_commit() == "abc1234"
+    finally:
+        monitoring.clear_commit_cache()
+    assert seen == [["git", "-c", "safe.directory=*", "rev-parse", "HEAD"]]
+
+
 def test_percentile_does_not_invent_a_value_for_an_empty_window() -> None:
     assert percentile([], 95) is None
     assert percentile([10.0], 95) == 10.0
@@ -167,6 +190,53 @@ def test_missing_heartbeat_is_unknown_and_stale_heartbeat_is_down(client) -> Non
     assert heart["detail"]["liveness"] == DOWN
     assert heart["value"] >= 300
     assert "DOWN" in heart["reason"]
+
+
+def test_small_heartbeat_skew_stays_up_and_a_large_jump_is_unknown(client) -> None:
+    session = _session()
+    try:
+        ahead = utcnow() + timedelta(milliseconds=500)
+        session.add(
+            WorkerHeartbeat(
+                worker_id="skew-worker",
+                pid=4243,
+                hostname="test",
+                version="0.1.0",
+                commit_sha=None,
+                started_at=ahead,
+                last_tick_at=ahead,
+                tick_duration_ms=1.0,
+                events_processed=0,
+                tick_status="empty",
+                updated_at=ahead,
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    fresh = client.get("/v1/admin/monitoring", headers=ADMIN)
+    assert fresh.status_code == 200, fresh.text
+    heart = _check(fresh.json(), "worker.heartbeat")
+    assert heart["status"] == OK
+    assert heart["detail"]["liveness"] == UP
+    assert heart["value"] == 0
+
+    session = _session()
+    try:
+        row = session.get(WorkerHeartbeat, "skew-worker")
+        assert row is not None
+        jumped = utcnow() + timedelta(seconds=30)
+        row.last_tick_at = jumped
+        row.updated_at = jumped
+        session.commit()
+    finally:
+        session.close()
+
+    unknown = client.get("/v1/admin/monitoring", headers=ADMIN)
+    heart = _check(unknown.json(), "worker.heartbeat")
+    assert heart["status"] == UNKNOWN
+    assert heart["detail"]["liveness"] == UNKNOWN
 
 
 def test_failed_events_warn_and_missing_disk_is_not_instrumented(client, frozen) -> None:

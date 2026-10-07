@@ -93,6 +93,7 @@ jobs:
           SIMCORE_ENV: development
           SIMCORE_ADMIN_TOKEN: dev-admin
           SIMCORE_WORKER_ID: simulator
+          SIMCORE_GIT_COMMIT: ${{ github.sha }}
         run: |
           python -m simcore.sim --mode full --players 4 --seed 8741 --ticks 2 --command-rate 1 --report-dir sim-reports/a
 
@@ -102,6 +103,7 @@ jobs:
           SIMCORE_ENV: development
           SIMCORE_ADMIN_TOKEN: dev-admin
           SIMCORE_WORKER_ID: simulator
+          SIMCORE_GIT_COMMIT: ${{ github.sha }}
         run: |
           python -m simcore.sim --mode full --players 4 --seed 8741 --ticks 2 --command-rate 1 --report-dir sim-reports/b
 
