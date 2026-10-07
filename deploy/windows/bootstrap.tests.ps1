@@ -110,6 +110,20 @@ Assert-True "download exact" (Test-SimcoreDownloadComplete -ActualBytes 40474188
 Assert-True "download short of declared" (-not (Test-SimcoreDownloadComplete -ActualBytes 1000 -ExpectedBytes 404741880 -MinimumBytes 1))
 Assert-True "download under minimum" (-not (Test-SimcoreDownloadComplete -ActualBytes 1000 -ExpectedBytes 0 -MinimumBytes 314572800))
 Assert-True "download meets minimum" (Test-SimcoreDownloadComplete -ActualBytes 314572800 -ExpectedBytes 0 -MinimumBytes 314572800)
+Assert-Equal "null PassThru response has no length" (Get-SimcoreHeaderContentLength -Response $null) ([long]0)
+$nullHeaders = [pscustomobject]@{ Headers = $null }
+Assert-Equal "null headers have no length" (Get-SimcoreHeaderContentLength -Response $nullHeaders) ([long]0)
+$withLength = [pscustomobject]@{ Headers = @{ "Content-Length" = "404741880" } }
+Assert-Equal "header content length" (Get-SimcoreHeaderContentLength -Response $withLength) ([long]404741880)
+$fromNull = Get-SimcoreDeclaredDownloadBytes -Response $null -ExpectedBytes 404741880
+Assert-Equal "null response uses expected length" $fromNull ([long]404741880)
+Assert-True "file matching expected passes" (Test-SimcoreDownloadComplete -ActualBytes 404741880 -ExpectedBytes $fromNull -MinimumBytes 314572800)
+$noLength = Get-SimcoreDeclaredDownloadBytes -Response $null -ExpectedBytes 0
+Assert-Equal "null response without expected length" $noLength ([long]0)
+Assert-True "file length meets minimum" (Test-SimcoreDownloadComplete -ActualBytes 314572800 -ExpectedBytes $noLength -MinimumBytes 314572800)
+$lengthError = Format-SimcoreDownloadLengthError -Url "https://example.invalid/postgresql.exe" -ActualBytes 1000 -DeclaredBytes $noLength -MinimumBytes 314572800
+Assert-Equal "length error names the minimum" $lengthError "Download of https://example.invalid/postgresql.exe is 1000 bytes (expected at least 314572800). The incomplete file was discarded."
+Assert-True "null installer process fails" (-not (Test-SimcoreInstallerExit (Get-SimcoreProcessExitCode $null)))
 $magicDir = Join-Path ([System.IO.Path]::GetTempPath()) ("simcore-magic-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $magicDir | Out-Null
 $magicFile = Join-Path $magicDir "installer.exe"
