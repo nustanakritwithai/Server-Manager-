@@ -18,7 +18,7 @@ from typing import TypeVar
 from fastapi import Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -41,6 +41,11 @@ def run_command(
     key = _idempotency_key(request)
     fingerprint = _fingerprint(request.url.path, payload)
     if key:
+        # Serialize same-player same-key requests for this transaction. Two
+        # overlapping calls otherwise both miss the row, both run the command,
+        # and the loser still commits its effects when its own event key does
+        # not collide with the winner's.
+        _lock_idempotency(session, player.id, key)
         existing = _load(session, player.id, key)
         if existing is not None:
             if existing.request_hash != fingerprint:
@@ -102,6 +107,15 @@ def _fingerprint(path: str, payload: object) -> str:
         document = payload
     raw = f"POST {path}\n{canonical_json(document)}".encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
+
+
+def _lock_idempotency(session: Session, player_id: int, key: str) -> None:
+    """Transaction-scoped lock. Released when the request commits or rolls back."""
+
+    digest = hashlib.sha256(f"{player_id}\0{key}".encode("utf-8")).digest()
+    first = int.from_bytes(digest[0:4], "big", signed=True)
+    second = int.from_bytes(digest[4:8], "big", signed=True)
+    session.execute(text("SELECT pg_advisory_xact_lock(:first, :second)"), {"first": first, "second": second})
 
 
 def _load(session: Session, player_id: int, key: str) -> CommandIdempotency | None:

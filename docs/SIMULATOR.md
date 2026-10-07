@@ -4,7 +4,7 @@ Seeded bot players play the world through the public HTTP API. After the run, th
 
 The simulator does not add gameplay endpoints. If a bot would need an action the API does not have, that action is skipped and listed in the report. It does not run arbitrary SQL, and it does not delete or truncate rows.
 
-Phase 8 (load and failure injection) is not this tool. Command submission is a single function, `submit_commands`, with overlap fixed at 1 so a CI checksum does not depend on which request arrived first. A later load test can reuse the planner and the checker.
+Load and failure injection is a separate tool, `python -m simcore.load`. See [LOAD_FAILURE.md](LOAD_FAILURE.md). Command submission here is a single function, `submit_commands`, with overlap fixed at 1 so a CI checksum does not depend on which request arrived first.
 
 ## What the bots can do
 

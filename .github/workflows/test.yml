@@ -167,3 +167,46 @@ jobs:
         with:
           name: simulator-reports
           path: sim-reports/
+
+  load-failure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Start PostgreSQL
+        run: |
+          docker run -d --name simcore-load-pg \
+            -e POSTGRES_USER=simcore \
+            -e POSTGRES_PASSWORD=simcore \
+            -e POSTGRES_DB=simcore_load_test \
+            -p 5432:5432 postgres:16
+          for _ in $(seq 1 60); do
+            docker exec simcore-load-pg pg_isready -U simcore -d simcore_load_test && exit 0
+            sleep 1
+          done
+          docker logs simcore-load-pg
+          exit 1
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Short load and failure run
+        env:
+          SIMCORE_ENV: development
+          SIMCORE_ADMIN_TOKEN: dev-admin
+          SIMCORE_DATABASE_URL: postgresql+psycopg://simcore:simcore@127.0.0.1:5432/simcore_load_test
+        run: python -m simcore.load --profile ci --report-dir load-reports
+
+      - name: Upload load report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-failure-report
+          path: load-reports/

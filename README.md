@@ -406,6 +406,10 @@ The suite covers:
 - `SELECT … FOR UPDATE SKIP LOCKED` so two workers claim different events.
 - World snapshots: create, tamper rejection, and snapshot → mutate (march, battle, losses, ledger) → restore with `hash(before) == hash(restored)`. Run that proof with `pytest tests/test_snapshots.py::test_snapshot_mutate_restore_hash_equality`.
 
+## Load and failure tests
+
+`python -m simcore.load` registers players through the real auth flow, sends mixed command traffic, and in local mode kills and restarts the API, the worker, and PostgreSQL to check that the world stays consistent. It refuses a non-localhost URL unless `--i-understand-this-is-production` is set and the rate stays inside a low cap. It does not inject failures against a server it did not start. The optional VPS probe is two health GETs and is documented separately. Do not point the load tool at the public game URL. Details and measured results are in [docs/LOAD_FAILURE.md](docs/LOAD_FAILURE.md).
+
 ## Layout
 
 ```
@@ -424,6 +428,7 @@ src/simcore/
   snapshot.py             world capture, checksum, safe restore
   backup.py               backup status, retention, restore-drill checks
   monitoring.py           measured health checks, heartbeats, samples
+  load/                   load and failure harness (`python -m simcore.load`)
   world.py                world_version and maintenance gates
 docs/GAME_RULES.md        the rules this server enforces
 docs/SNAPSHOTS.md         snapshot vs backup, checksum, restore sequence

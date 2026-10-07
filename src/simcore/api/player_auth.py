@@ -323,7 +323,10 @@ def refresh(
     if parsed is None:
         return JSONResponse(status_code=401, content=_REFRESH_INVALID)
     session_id, secret = parsed
-    row = session.get(PlayerRefreshSession, session_id)
+    # Lock the presented row so two overlapping refreshes cannot both observe
+    # it as live and both mint a successor. The waiter sees the rotation and
+    # revokes the family.
+    row = session.get(PlayerRefreshSession, session_id, with_for_update=True)
     if row is None or not refresh_matches(row, secret):
         return JSONResponse(status_code=401, content=_REFRESH_INVALID)
     wall = datetime.now(timezone.utc)
