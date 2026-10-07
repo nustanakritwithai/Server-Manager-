@@ -59,6 +59,12 @@ def process_event(session: Session, event: Event, now: datetime) -> None:
         _process_build(session, event, now)
     elif event.type == EventType.RESEARCH_COMPLETE:
         _process_research(session, event, now)
+    elif event.type == EventType.TRAIN_COMPLETE:
+        _process_train(session, event, now)
+    elif event.type == EventType.TRANSFER_ARRIVE:
+        _process_transfer(session, event, now)
+    elif event.type == EventType.CITY_FOUNDED:
+        pass
     else:
         raise GameError(f"unknown event type {event.type}", code="invalid_event")
     event.status = EventStatus.COMPLETED
@@ -83,7 +89,7 @@ def _process_army_arrive(session: Session, event: Event, now: datetime) -> None:
         return
     if movement.mission == Mission.ATTACK:
         _resolve_attack(session, event, movement, now)
-    elif movement.mission == Mission.MOVE:
+    elif movement.mission in {Mission.MOVE, Mission.GARRISON}:
         _resolve_move(session, event, movement, now)
     elif movement.mission == Mission.RETURN:
         _process_army_return(session, event, now)
@@ -99,7 +105,7 @@ def _resolve_attack(session: Session, event: Event, movement: Movement, now: dat
         raise GameError("army missing", code="invalid_event")
     cities = lock_cities(session, movement.destination_city_id)
     destination = cities[movement.destination_city_id]
-    accrue_city(session, destination, now, source_event_id=event.id)
+    accrue_city(session, destination, now, source_event_id=event.id, trace_id=event.trace_id)
 
     defender_ids = list(
         session.scalars(
@@ -221,7 +227,7 @@ def _resolve_move(session: Session, event: Event, movement: Movement, now: datet
     army = armies[movement.army_id]
     if destination.player_id != army.player_id:
         raise GameError("destination is no longer owned by the army's player", code="invalid_event")
-    accrue_city(session, destination, now, source_event_id=event.id)
+    accrue_city(session, destination, now, source_event_id=event.id, trace_id=event.trace_id)
     army.location_city_id = destination.id
     army.status = ArmyStatus.GARRISONED
     if movement.relocate:
@@ -242,7 +248,7 @@ def _process_army_return(session: Session, event: Event, now: datetime) -> None:
     cities = lock_cities(session, movement.destination_city_id)
     home = cities[movement.destination_city_id]
     army = lock_armies(session, movement.army_id)[movement.army_id]
-    accrue_city(session, home, now, source_event_id=event.id)
+    accrue_city(session, home, now, source_event_id=event.id, trace_id=event.trace_id)
     for resource in RESOURCES:
         amount = int(getattr(movement, f"loot_{resource}"))
         if amount <= 0:
@@ -377,6 +383,110 @@ def _process_research(session: Session, event: Event, now: datetime) -> None:
     player.research = updated
     flag_modified(player, "research")
     session.flush()
+
+
+def _process_train(session: Session, event: Event, now: datetime) -> None:
+    city_id = int(event.payload["city_id"])
+    unit_type = str(event.payload["unit_type"])
+    count = int(event.payload["count"])
+    army_id = event.payload.get("army_id")
+    key = f"event:{event.id}:train_units:{unit_type}"
+    if session.scalar(select(Transaction).where(Transaction.idempotency_key == key)) is not None:
+        return
+    city = lock_cities(session, city_id)[city_id]
+    accrue_city(session, city, now, source_event_id=event.id, trace_id=event.trace_id)
+    army: Army | None = None
+    if army_id is not None:
+        candidate = session.get(Army, int(army_id), with_for_update=True)
+        if (
+            candidate is not None
+            and candidate.player_id == city.player_id
+            and candidate.status == ArmyStatus.GARRISONED
+            and candidate.location_city_id == city.id
+        ):
+            army = candidate
+    spawned = False
+    if army is None:
+        army = Army(
+            player_id=city.player_id,
+            name=f"Trained {city.id} {unit_type}"[:40],
+            home_city_id=city.id,
+            location_city_id=city.id,
+            status=ArmyStatus.GARRISONED,
+            units=[],
+            created_at=now,
+        )
+        session.add(army)
+        session.flush()
+        spawned = True
+    _add_units(army, unit_type, count)
+    balance = _unit_count(army, unit_type)
+    if not _record_effect(
+        session,
+        key=key,
+        player_id=city.player_id,
+        city_id=city.id,
+        resource=f"unit:{unit_type}",
+        delta=count,
+        balance_after=balance,
+        reason="train_units",
+        source_event_id=event.id,
+        now=now,
+        trace_id=event.trace_id,
+    ):
+        return
+    payload = dict(event.payload)
+    payload["spawned"] = spawned
+    payload["army_id"] = army.id
+    event.payload = payload
+    flag_modified(event, "payload")
+    session.flush()
+
+
+def _process_transfer(session: Session, event: Event, now: datetime) -> None:
+    payload = event.payload
+    destination_id = int(payload["destination_city_id"])
+    player_id = int(payload["player_id"])
+    amounts = payload.get("amounts") or {}
+    city = lock_cities(session, destination_id)[destination_id]
+    if city.player_id != player_id:
+        raise GameError("destination is no longer owned by that player", code="invalid_event")
+    accrue_city(session, city, now, source_event_id=event.id, trace_id=event.trace_id)
+    for resource in RESOURCES:
+        amount = int(amounts.get(resource, 0) or 0)
+        if amount <= 0:
+            continue
+        apply_resource_delta(
+            session,
+            city=city,
+            resource=resource,
+            delta=amount,
+            reason=Reason.TRANSFER_IN,
+            idempotency_key=f"event:{event.id}:transfer_in:{resource}",
+            source_event_id=event.id,
+            now=now,
+            trace_id=event.trace_id,
+        )
+
+
+def _add_units(army: Army, unit_type: str, count: int) -> None:
+    stacks = [dict(stack) for stack in (army.units or [])]
+    for stack in stacks:
+        if str(stack.get("type")) == unit_type:
+            stack["count"] = int(stack["count"]) + count
+            break
+    else:
+        stacks.append({"type": unit_type, "count": count})
+    army.units = stacks
+    flag_modified(army, "units")
+
+
+def _unit_count(army: Army, unit_type: str) -> int:
+    total = 0
+    for stack in army.units or []:
+        if str(stack.get("type")) == unit_type:
+            total += int(stack.get("count") or 0)
+    return total
 
 
 def _record_effect(

@@ -107,7 +107,7 @@ If the probe fails, queue, heartbeat, and game checks that need the database are
 
 ### Not measured
 
-`host.cpu` and `host.memory` are NOT INSTRUMENTED. `build.commit` is NOT INSTRUMENTED when `SIMCORE_GIT_COMMIT` is unset and `git rev-parse HEAD` does not return a SHA. The package version is still reported.
+`host.cpu` is `psutil.cpu_percent` over a 0.1 second blocking sample, so the first reading is a real measurement and not the 0.0 that a non-blocking call returns. `host.memory` is `psutil.virtual_memory().percent`. Both are percents, higher is worse. Defaults are CPU warn 90 / critical 98 and memory warn 85 / critical 95, so a saturated sample can be CRITICAL. Override them with `SIMCORE_MONITOR_CPU_WARN_PERCENT`, `SIMCORE_MONITOR_CPU_CRITICAL_PERCENT`, `SIMCORE_MONITOR_MEMORY_WARN_PERCENT`, and `SIMCORE_MONITOR_MEMORY_CRITICAL_PERCENT`. A sample at or above the critical setting is CRITICAL. If psutil raises or the number is not finite, the status is UNKNOWN, the value is null, and nothing is invented. The reading is cached for about a second so the dashboard and the monitoring report share it. `build.commit` is NOT INSTRUMENTED when `SIMCORE_GIT_COMMIT` is unset and `git rev-parse HEAD` does not return a SHA. The package version is still reported.
 
 ## History and retention
 
@@ -211,4 +211,4 @@ Free space at or below 5 GiB is WARN. At or below 2 GiB is CRITICAL. This host h
 
 ### NOT INSTRUMENTED
 
-CPU, memory, a commit SHA the process could not read, or a disk path that does not exist. Set `SIMCORE_GIT_COMMIT` if the service host has no `git` command and you want the SHA recorded. Set `SIMCORE_MONITOR_DISK_PATH` if the default drive is the wrong volume. Leaving them unset is valid; the UI shows NOT INSTRUMENTED rather than a guessed number.
+A commit SHA the process could not read, or a disk path that does not exist. Set `SIMCORE_GIT_COMMIT` if the service host has no `git` command and you want the SHA recorded. Set `SIMCORE_MONITOR_DISK_PATH` if the default drive is the wrong volume. Leaving them unset is valid; the UI shows NOT INSTRUMENTED rather than a guessed number. Host CPU and memory are measured. A failed measurement is UNKNOWN, not NOT INSTRUMENTED and not zero.

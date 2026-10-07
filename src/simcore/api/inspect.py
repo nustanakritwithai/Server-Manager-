@@ -24,12 +24,9 @@ from simcore.models import (
     WorldSnapshot,
     WorldState,
 )
+from simcore.monitoring import host_dashboard_gaps
 from simcore.present import army_body, city_body, report_body
 from simcore.snapshot import snapshot_metadata
-
-# CPU and memory are still not measured. Heartbeat and disk are on
-# GET /v1/admin/monitoring. The dashboard keeps this token for the gaps.
-NOT_INSTRUMENTED = "NOT INSTRUMENTED"
 
 _EVENT_STATUSES = (
     EventStatus.PENDING,
@@ -147,10 +144,7 @@ def dashboard(session: Session, *, now: datetime, offset_seconds: int) -> dict[s
         },
         "events": event_counts,
         "latest_snapshot": None if latest is None else snapshot_metadata(latest),
-        "uninstrumented": {
-            "host_cpu": NOT_INSTRUMENTED,
-            "host_memory": NOT_INSTRUMENTED,
-        },
+        "uninstrumented": host_dashboard_gaps(),
     }
 
 

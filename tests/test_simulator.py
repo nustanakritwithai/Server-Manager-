@@ -126,7 +126,7 @@ def test_same_seed_plans_the_same_commands() -> None:
     assert once(11) != once(12)
     actions = [row["action"] for row in once(11)]
     assert actions[0] == "attack"
-    assert actions[1] == "move"
+    assert actions[1] == "garrison"
 
 
 def test_ci_same_seed_matches(db: None, tmp_path: Path) -> None:
@@ -144,7 +144,7 @@ def test_ci_same_seed_matches(db: None, tmp_path: Path) -> None:
     assert first["counts"]["battles"] > 0
     assert first["trace_verdicts"]["FAIL"] == 0
     assert first["audit_chain"]["status"] == "PASS"
-    assert first["skipped_actions"]
+    assert first["skipped_actions"] == []
     report = json.loads((tmp_path / "a" / "report.json").read_text(encoding="utf-8"))
     assert report["result"] == "PASS"
     assert (tmp_path / "a" / "report.md").read_text(encoding="utf-8").startswith("# Simulator report")

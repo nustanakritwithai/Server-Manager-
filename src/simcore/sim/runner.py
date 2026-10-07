@@ -25,6 +25,7 @@ import uvicorn
 from sqlalchemy import func, select, text
 
 from simcore.sim.bots import UNAVAILABLE_ACTIONS, PlannedCommand, plan_tick
+from simcore.sim.coverage import check_admin, coverage_report, run_coverage
 from simcore.sim.http import ApiClient, latency_summary
 from simcore.sim.ids import install as install_trace_ids
 from simcore.sim.report import write_report
@@ -47,10 +48,17 @@ _CI_WORKER_ID = "simulator"
 _COMMAND_PATHS = {
     "attack": "/v1/commands/attack",
     "move": "/v1/commands/move",
+    "reinforce": "/v1/commands/move",
     "recall": "/v1/commands/recall",
     "build": "/v1/commands/build",
     "research": "/v1/commands/research",
+    "train_units": "/v1/commands/train",
+    "found_city": "/v1/commands/found-city",
+    "garrison": "/v1/commands/garrison",
+    "transfer_resources": "/v1/commands/transfer",
 }
+
+_LOCAL_MODES = frozenset({"ci", "full"})
 
 
 @dataclass
@@ -69,10 +77,12 @@ class SimConfig:
 
 
 def run(config: SimConfig) -> dict[str, Any]:
-    if config.mode not in {"ci", "staging"}:
-        raise SafetyError("mode must be ci or staging")
+    if config.mode not in {"ci", "staging", "full"}:
+        raise SafetyError("mode must be ci, full, or staging")
     if config.players < 1 or config.players > 30:
         raise SafetyError("--players must be from 1 to 30")
+    if config.mode == "full" and config.players < 4:
+        raise SafetyError("full mode needs at least 4 players")
     if config.command_rate < 1 or config.command_rate > 20:
         raise SafetyError("--command-rate must be from 1 to 20")
     if not config.admin_token:
@@ -80,9 +90,9 @@ def run(config: SimConfig) -> dict[str, Any]:
 
     database_url = config.database_url or os.environ.get("SIMCORE_DATABASE_URL", "").strip() or None
     env_name = os.environ.get("SIMCORE_ENV", "")
-    if config.mode == "ci" and database_url and is_live_database(database_url):
+    if config.mode in _LOCAL_MODES and database_url and is_live_database(database_url):
         raise SafetyError(
-            "CI mode seeds a fresh test database and will not do that to a live database name, "
+            "CI and full mode seed a fresh test database and will not do that to a live database name, "
             "even with --i-understand-this-is-production. Use --mode staging to send commands "
             "to an existing world, and take a snapshot first."
         )
@@ -114,7 +124,7 @@ def run(config: SimConfig) -> dict[str, Any]:
         if database_url:
             os.environ["SIMCORE_DATABASE_URL"] = database_url
         os.environ["SIMCORE_ADMIN_TOKEN"] = config.admin_token
-        if config.mode == "ci":
+        if config.mode in _LOCAL_MODES:
             os.environ["SIMCORE_WORKER_ID"] = _CI_WORKER_ID
             os.environ["SIMCORE_MONITOR_API_SAMPLER"] = "false"
             os.environ["SIMCORE_MONITOR_SAMPLE_SECONDS"] = "0"
@@ -122,17 +132,18 @@ def run(config: SimConfig) -> dict[str, Any]:
             if os.environ.get("SIMCORE_ENV", "").strip().lower() == "production":
                 os.environ["SIMCORE_ENV"] = "development"
         _reload_settings()
-        if config.mode == "ci":
+        if config.mode in _LOCAL_MODES:
             _migrate()
             restore_ids = install_trace_ids(config.seed)
             from simcore.clock import FrozenClock, OffsetClock
             from simcore.db import get_sessionmaker
 
             frozen = FrozenClock(CI_EPOCH)
+            roster = "coverage" if config.mode == "full" else "default"
             session = get_sessionmaker()()
             try:
                 now = OffsetClock(session, frozen).now()
-                seed_bots(session, now, config.players)
+                seed_bots(session, now, config.players, roster=roster)
                 session.commit()
             except Exception:
                 session.rollback()
@@ -142,7 +153,7 @@ def run(config: SimConfig) -> dict[str, Any]:
             server, thread, port = _start_server(frozen)
             base_url = f"http://127.0.0.1:{port}"
             ensure_safe(
-                mode="ci",
+                mode=config.mode,
                 base_url=base_url,
                 database_url=database_url,
                 env_name=os.environ.get("SIMCORE_ENV", ""),
@@ -155,7 +166,7 @@ def run(config: SimConfig) -> dict[str, Any]:
         ticks, duration, step_or_pause = _schedule(config)
         thresholds = threshold_document(
             mode=config.mode,
-            step_seconds=step_or_pause if config.mode == "ci" else None,
+            step_seconds=step_or_pause if config.mode in _LOCAL_MODES else None,
         )
         api = ApiClient(base_url, admin_token=config.admin_token)
         _wait_ready(api)
@@ -164,11 +175,23 @@ def run(config: SimConfig) -> dict[str, Any]:
         sequence: list[dict[str, Any]] = []
         max_lag = 0.0
         drain_failures: list[int] = []
+        coverage_state: dict[str, Any] | None = None
+        if config.mode == "full":
+            coverage_state = run_coverage(
+                api,
+                bots,
+                advance=_advance,
+                drain=_drain,
+                sample_lag=_sample_lag,
+            )
+            sequence.extend(coverage_state["sequence"])
+            drain_failures.extend(coverage_state["drain_failures"])
+            max_lag = max(max_lag, float(coverage_state["max_lag"]))
         for tick in range(ticks):
             views = [_view(api, bot) for bot in bots]
             planned = plan_tick(rng, tick=tick, players=views, command_rate=config.command_rate)
             sequence.extend(submit_commands(api, bots, planned, overlap=1))
-            if config.mode == "ci":
+            if config.mode in _LOCAL_MODES:
                 _advance(api, int(step_or_pause))
                 observed = _sample_lag(api)
                 max_lag = max(max_lag, observed)
@@ -178,7 +201,7 @@ def run(config: SimConfig) -> dict[str, Any]:
                     raise RuntimeError("worker is paused; the simulator does not resume a restore")
             elif tick + 1 < ticks and step_or_pause > 0:
                 time.sleep(step_or_pause)
-        if config.mode == "ci":
+        if config.mode in _LOCAL_MODES:
             caught = _catch_up(api)
             max_lag = max(max_lag, caught["max_lag"])
             drain_failures.extend(caught["failed"])
@@ -186,13 +209,36 @@ def run(config: SimConfig) -> dict[str, Any]:
         if config.mode == "staging":
             max_lag = max(max_lag, _sample_lag(api))
 
+        coverage: dict[str, Any] | None = None
+        if coverage_state is not None:
+            accepted_traces = [
+                str(row["trace_id"])
+                for row in sequence
+                if row.get("result") == "accepted" and row.get("trace_id")
+            ]
+            admin_checks = check_admin(api, coverage_state, trace_ids=accepted_traces)
+            status, _body = api.json(
+                "POST",
+                "/v1/admin/snapshots",
+                headers={**api.admin_headers, "content-type": "application/json"},
+                json={"reason": "MANUAL"},
+            )
+            if status != 200:
+                raise RuntimeError(f"snapshot before verification returned HTTP {status}")
+            coverage = {"state": coverage_state, "admin": admin_checks}
+
+        if config.mode in _LOCAL_MODES:
+            _drain(api)
         verified = verify_run(
             api,
             mode=config.mode,
-            player_count=config.players if config.mode == "ci" else None,
+            player_count=config.players if config.mode in _LOCAL_MODES else None,
             thresholds=thresholds,
             max_event_lag_seconds=max_lag,
+            roster="coverage" if config.mode == "full" else "default",
         )
+        if coverage is not None:
+            coverage["report"] = coverage_report(coverage["state"], verified["invariants"], coverage["admin"])
         latency = latency_summary(api.latencies_ms)
         payload = _payload(
             config,
@@ -205,6 +251,7 @@ def run(config: SimConfig) -> dict[str, Any]:
             verified=verified,
             latency=latency,
             drain_failures=drain_failures,
+            coverage=None if coverage is None else coverage.get("report"),
         )
         write_report(config.report_dir, payload)
         return payload
@@ -287,6 +334,7 @@ def _payload(
     verified: dict[str, Any],
     latency: dict[str, Any],
     drain_failures: list[int],
+    coverage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     accepted = sum(1 for row in sequence if row["result"] == "accepted")
     rejected = sum(1 for row in sequence if row["result"] == "rejected")
@@ -348,6 +396,27 @@ def _payload(
     if latency_status != "PASS":
         failed.append(latency_row)
 
+    if coverage is not None and coverage.get("verdict") != "COMPLETE":
+        item = {
+            "invariant": "coverage_completeness",
+            "status": "FAIL",
+            "required": True,
+            "trace_id": None,
+            "detail": "INCOMPLETE: " + "; ".join(str(gap) for gap in (coverage.get("gaps") or [])[:12]),
+        }
+        invariants.append(item)
+        failed.append(item)
+    elif coverage is not None:
+        invariants.append(
+            {
+                "invariant": "coverage_completeness",
+                "status": "PASS",
+                "required": True,
+                "trace_id": None,
+                "detail": "every endpoint, command, and invariant is covered",
+            }
+        )
+
     result = "PASS"
     for item in invariants:
         if item.get("required", True) and item.get("status") != "PASS":
@@ -367,7 +436,7 @@ def _payload(
         "ticks": ticks,
         "command_rate": config.command_rate,
         "duration_seconds": duration,
-        "step_seconds": step_or_pause if config.mode == "ci" else None,
+        "step_seconds": step_or_pause if config.mode in _LOCAL_MODES else None,
         "staging_pause_seconds": step_or_pause if config.mode == "staging" else None,
         "base_url": base_url,
         "thresholds": thresholds,
@@ -385,6 +454,8 @@ def _payload(
         "invariants": invariants,
         "failed_invariants": failed,
         "skipped_actions": [dict(item) for item in UNAVAILABLE_ACTIONS],
+        "commands_by_type": _commands_by_type(sequence),
+        "coverage": coverage,
         "command_sequence": [
             {
                 "tick": row["tick"],
@@ -407,7 +478,7 @@ def _schedule(config: SimConfig) -> tuple[int, int, int]:
         raise SafetyError("--ticks must be at least 1")
     if config.duration is not None and config.duration < 1:
         raise SafetyError("--duration must be at least 1")
-    if config.mode == "ci":
+    if config.mode in _LOCAL_MODES:
         if config.ticks is None and config.duration is None:
             ticks = CI_DEFAULT_TICKS
             step = CI_DEFAULT_STEP_SECONDS
@@ -488,8 +559,18 @@ def _wait_ready(api: ApiClient) -> None:
     raise RuntimeError(f"API did not become ready: {last}")
 
 
+def _commands_by_type(sequence: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in sequence:
+        if row.get("result") != "accepted":
+            continue
+        action = str(row.get("action") or "")
+        counts[action] = counts.get(action, 0) + 1
+    return counts
+
+
 def _login_bots(api: ApiClient, config: SimConfig) -> list[dict[str, Any]]:
-    if config.mode == "ci":
+    if config.mode in _LOCAL_MODES:
         names = [f"Bot{index:02d}" for index in range(1, config.players + 1)]
     else:
         status, body = api.json("GET", "/v1/admin/players", headers=api.admin_headers)

@@ -28,6 +28,40 @@ RESEARCH: frozenset[str] = frozenset({"forestry", "husbandry", "metallurgy", "lo
 BUILD_SECONDS = 30 * 60
 RESEARCH_SECONDS = 60 * 60
 
+# Training spends these resources immediately and finishes after seconds * count.
+# Costs and times are config, not stored per city. See docs/GAME_RULES.md.
+MAX_TRAIN_COUNT = 100
+
+# A new city is paid for from one city the player already owns.
+FOUND_CITY_COST: dict[str, int] = {"wood": 150, "food": 150, "iron": 60, "gold": 30}
+FOUND_CITY_RATES: dict[str, int] = {"wood": 40, "food": 40, "iron": 20, "gold": 10}
+
+# Founding rejects coordinates outside this inclusive square. Cities already on
+# the map are not moved. Seeded and test cities sit inside it.
+MAP_MIN = -500
+MAP_MAX = 500
+MAX_CITIES_PER_PLAYER = 8
+
+# Resource transfers march at this many tiles per hour. Same rounding as armies.
+CONVOY_TILES_PER_HOUR = 10
+
+
+@dataclass(frozen=True)
+class TrainCost:
+    wood: int
+    food: int
+    iron: int
+    gold: int
+    seconds: int
+
+
+UNIT_TRAINING = {
+    "militia": TrainCost(wood=10, food=20, iron=0, gold=0, seconds=30),
+    "infantry": TrainCost(wood=20, food=40, iron=15, gold=0, seconds=45),
+    "archer": TrainCost(wood=25, food=25, iron=10, gold=5, seconds=45),
+    "cavalry": TrainCost(wood=40, food=50, iron=30, gold=15, seconds=60),
+}
+
 MAX_BATTLE_ROUNDS = 8
 LOOT_PERCENT = 30
 VARIANCE_MIN_BP = 9000
