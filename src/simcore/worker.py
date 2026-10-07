@@ -29,8 +29,21 @@ from simcore.world import WORKER_DRAIN_LOCK
 
 logger = logging.getLogger("simcore.worker")
 
-WORKER_ID = f"{socket.gethostname()}:{os.getpid()}"
 WORKER_STARTED_AT = utcnow()
+
+
+def resolve_worker_id() -> str:
+    """Id stored on a claimed event.
+
+    The default is hostname and pid. ``SIMCORE_WORKER_ID`` overrides it so two
+    CI processes can leave the same value on the world snapshot. Unset, the
+    worker behaves as before.
+    """
+
+    override = os.environ.get("SIMCORE_WORKER_ID", "").strip()
+    if override:
+        return override[:80]
+    return f"{socket.gethostname()}:{os.getpid()}"
 
 
 def run_once(base_clock: Clock | None = None) -> tuple[str, int | None]:
@@ -61,7 +74,7 @@ def run_once(base_clock: Clock | None = None) -> tuple[str, int | None]:
                 status = "paused"
             else:
                 clock = OffsetClock(session, base)
-                event = claim_one(session, clock.now(), worker_id=WORKER_ID)
+                event = claim_one(session, clock.now(), worker_id=resolve_worker_id())
                 if event is None:
                     status = "empty"
                 else:
@@ -86,7 +99,7 @@ def run_once(base_clock: Clock | None = None) -> tuple[str, int | None]:
 def _observe(status: str, event_id: int | None, started: float) -> None:
     try:
         observe_tick(
-            worker_id=WORKER_ID,
+            worker_id=resolve_worker_id(),
             started_at=WORKER_STARTED_AT,
             tick_status=status,
             tick_duration_ms=(time.perf_counter() - started) * 1000.0,
@@ -134,7 +147,7 @@ def serve(
 
     settings = get_settings()
     interval = settings.worker_poll_seconds if poll_seconds is None else poll_seconds
-    logger.info("worker %s polling every %.2fs", WORKER_ID, interval)
+    logger.info("worker %s polling every %.2fs", resolve_worker_id(), interval)
     last_sample = time.monotonic()
     while stop_event is None or not stop_event.is_set():
         status, _event_id = run_once(base_clock)

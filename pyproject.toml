@@ -25,6 +25,7 @@ dev = ["pytest>=8.3", "httpx>=0.27"]
 simcore-worker = "simcore.worker:main"
 simcore-seed = "simcore.seed:main"
 simcore-cli = "simcore.cli:main"
+simcore-sim = "simcore.sim.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
