@@ -70,7 +70,12 @@ def create_snapshot_route(
         result="success",
         reason=row.reason,
     )
-    return snapshot_metadata(row)
+    # The session dependency commits after the response is sent. A client that
+    # inspects this id immediately (the simulator does) can otherwise observe
+    # the row as missing. Commit before the response leaves.
+    metadata = snapshot_metadata(row)
+    session.commit()
+    return metadata
 
 
 @router.get("")

@@ -198,8 +198,23 @@ def test_failed_events_warn_and_missing_disk_is_not_instrumented(client, frozen)
     assert disk["status"] == NOT_INSTRUMENTED
     assert disk["value"] is None
     cpu = _check(report, "host.cpu")
-    assert cpu["status"] == NOT_INSTRUMENTED
+    assert cpu["status"] in {OK, WARN, "CRITICAL"}
+    assert isinstance(cpu["value"], (int, float))
+    memory = _check(report, "host.memory")
+    assert memory["status"] in {OK, WARN, "CRITICAL"}
+    assert isinstance(memory["value"], (int, float))
+
+
+def test_host_failure_is_unknown_not_a_zero(client, monkeypatch) -> None:
+    monkeypatch.setattr("simcore.monitoring.measure_host", lambda: (None, None, "OSError"))
+    body = client.get("/v1/admin/monitoring", headers=ADMIN).json()
+    cpu = _check(body, "host.cpu")
+    memory = _check(body, "host.memory")
+    assert cpu["status"] == UNKNOWN
     assert cpu["value"] is None
+    assert memory["status"] == UNKNOWN
+    assert memory["value"] is None
+    assert "0" not in cpu["reason"]
 
 
 def test_disk_and_database_use_real_measurements(client) -> None:

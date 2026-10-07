@@ -12,7 +12,18 @@ from simcore.api.deps import get_authenticated_player, get_clock, get_current_pl
 from simcore.api.player_auth import router as player_auth_router
 from simcore.clock import OffsetClock
 from simcore.errors import GameError
-from simcore.game.commands import attack_city, move_army, queue_build, queue_research, recall_army
+from simcore.constants import RESOURCES
+from simcore.game.commands import (
+    attack_city,
+    found_city,
+    garrison_army,
+    move_army,
+    queue_build,
+    queue_research,
+    recall_army,
+    train_units,
+    transfer_resources,
+)
 from simcore.game.economy import accrue_city
 from simcore.models import Army, BattleReport, City, Event, Player
 from simcore.present import army_body, city_body, movement_body, report_body
@@ -43,6 +54,34 @@ class BuildIn(BaseModel):
 
 class ResearchIn(BaseModel):
     tech: str = Field(min_length=1, max_length=40)
+
+
+class TrainIn(BaseModel):
+    city_id: int
+    unit_type: str = Field(min_length=1, max_length=40)
+    count: int = Field(ge=1, le=100)
+    army_id: int | None = None
+
+
+class FoundCityIn(BaseModel):
+    source_city_id: int
+    x: int
+    y: int
+    name: str = Field(min_length=1, max_length=40)
+
+
+class GarrisonIn(BaseModel):
+    army_id: int
+    city_id: int
+
+
+class TransferIn(BaseModel):
+    source_city_id: int
+    destination_city_id: int
+    wood: int = Field(default=0, ge=0)
+    food: int = Field(default=0, ge=0)
+    iron: int = Field(default=0, ge=0)
+    gold: int = Field(default=0, ge=0)
 
 
 def _require_city(session: Session, player: Player, city_id: int) -> City:
@@ -248,6 +287,93 @@ def command_research(
         body,
         lambda: _timed_event_body(queue_research(session, player, body.tech, clock.now())),
     )
+
+
+@router.post("/commands/train", tags=["commands"], response_model=None)
+def command_train(
+    body: TrainIn,
+    request: Request,
+    player: Annotated[Player, Depends(get_current_player)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
+    clock: Annotated[OffsetClock, Depends(get_clock)],
+) -> dict[str, object]:
+    return run_command(
+        request,
+        session,
+        player,
+        body,
+        lambda: _timed_event_body(
+            train_units(
+                session,
+                player,
+                body.city_id,
+                body.unit_type,
+                body.count,
+                clock.now(),
+                army_id=body.army_id,
+            )
+        ),
+    )
+
+
+@router.post("/commands/found-city", tags=["commands"], response_model=None)
+def command_found_city(
+    body: FoundCityIn,
+    request: Request,
+    player: Annotated[Player, Depends(get_current_player)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
+    clock: Annotated[OffsetClock, Depends(get_clock)],
+) -> dict[str, object]:
+    def _found() -> dict[str, object]:
+        city, event = found_city(session, player, body.source_city_id, body.x, body.y, body.name, clock.now())
+        payload = city_body(session, city, include_resources=True)
+        payload["event_id"] = event.id
+        payload["trace_id"] = event.trace_id
+        return payload
+
+    return run_command(request, session, player, body, _found)
+
+
+@router.post("/commands/garrison", tags=["commands"], response_model=None)
+def command_garrison(
+    body: GarrisonIn,
+    request: Request,
+    player: Annotated[Player, Depends(get_current_player)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
+    clock: Annotated[OffsetClock, Depends(get_clock)],
+) -> dict[str, object]:
+    return run_command(
+        request,
+        session,
+        player,
+        body,
+        lambda: movement_body(*garrison_army(session, player, body.army_id, body.city_id, clock.now())),
+    )
+
+
+@router.post("/commands/transfer", tags=["commands"], response_model=None)
+def command_transfer(
+    body: TransferIn,
+    request: Request,
+    player: Annotated[Player, Depends(get_current_player)],
+    session: Annotated[Session, Depends(get_session, scope="function")],
+    clock: Annotated[OffsetClock, Depends(get_clock)],
+) -> dict[str, object]:
+    def _transfer() -> dict[str, object]:
+        amounts = {name: int(getattr(body, name)) for name in RESOURCES}
+        event = transfer_resources(
+            session,
+            player,
+            body.source_city_id,
+            body.destination_city_id,
+            amounts,
+            clock.now(),
+        )
+        payload = _timed_event_body(event)
+        payload["amounts"] = amounts
+        return payload
+
+    return run_command(request, session, player, body, _transfer)
 
 
 def _timed_event_body(event: Event) -> dict[str, object]:

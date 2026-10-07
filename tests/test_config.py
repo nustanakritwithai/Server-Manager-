@@ -8,6 +8,27 @@ from pydantic import ValidationError
 from simcore.config import Settings, get_settings, normalize_database_url
 
 
+def test_host_thresholds_have_reachable_defaults_and_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    get_settings.cache_clear()
+    try:
+        defaults = Settings(_env_file=None)
+        assert defaults.monitor_cpu_warn_percent == 90
+        assert defaults.monitor_cpu_critical_percent == 98
+        assert defaults.monitor_memory_warn_percent == 85
+        assert defaults.monitor_memory_critical_percent == 95
+        monkeypatch.setenv("SIMCORE_MONITOR_CPU_WARN_PERCENT", "70")
+        monkeypatch.setenv("SIMCORE_MONITOR_CPU_CRITICAL_PERCENT", "90")
+        monkeypatch.setenv("SIMCORE_MONITOR_MEMORY_WARN_PERCENT", "60")
+        monkeypatch.setenv("SIMCORE_MONITOR_MEMORY_CRITICAL_PERCENT", "80")
+        overridden = Settings(_env_file=None)
+        assert overridden.monitor_cpu_warn_percent == 70
+        assert overridden.monitor_cpu_critical_percent == 90
+        assert overridden.monitor_memory_warn_percent == 60
+        assert overridden.monitor_memory_critical_percent == 80
+    finally:
+        get_settings.cache_clear()
+
+
 def test_postgres_scheme_is_rewritten_to_psycopg() -> None:
     assert (
         normalize_database_url("postgres://simcore:secret@db.internal:5432/simcore")

@@ -85,22 +85,63 @@ def render_markdown(payload: dict[str, Any]) -> str:
             trace = item.get("trace_id") or "—"
             lines.append(f"- `{item.get('invariant')}` trace_id `{trace}`: {item.get('detail')}")
     lines.extend(["", "## Actions with no endpoint", ""])
-    for item in payload.get("skipped_actions") or []:
-        lines.append(f"- `{item.get('action')}`: {item.get('reason')}")
+    skipped = payload.get("skipped_actions") or []
+    if not skipped:
+        lines.append("None.")
+    else:
+        for item in skipped:
+            lines.append(f"- `{item.get('action')}`: {item.get('reason')}")
     lines.extend(["", "## Auth coverage", ""])
-    coverage = payload.get("auth_coverage") or {}
-    lines.append(f"Verdict: {coverage.get('verdict') or 'NOT RUN'}.")
+    auth = payload.get("auth_coverage") or {}
+    lines.append(f"Verdict: {auth.get('verdict') or 'NOT RUN'}.")
     lines.append("")
-    matrix = coverage.get("matrix") or []
-    if matrix:
+    auth_matrix = auth.get("matrix") or []
+    if auth_matrix:
         lines.append("| Case | Status | Detail |")
         lines.append("| --- | --- | --- |")
-        for row in matrix:
+        for row in auth_matrix:
             detail = str(row.get("detail") or "").replace("|", "/")
             lines.append(f"| {row.get('name')} | {row.get('status')} | {detail} |")
     else:
-        lines.append("Not run. CI mode is the run that exercises register, login, and refresh.")
-    lines.append("")
+        lines.append("Not run. CI and full mode exercise register, login, and refresh after the world is scored.")
+    coverage = payload.get("coverage")
+    lines.extend(["", "## Coverage", ""])
+    if not isinstance(coverage, dict):
+        lines.append("This run did not execute the full coverage scenario.")
+    else:
+        lines.append(f"**Verdict: {coverage.get('verdict', 'INCOMPLETE')}**")
+        lines.append("")
+        lines.append("| Kind | Name | Valid | Invalid |")
+        lines.append("| --- | --- | --- | --- |")
+        for row in coverage.get("matrix") or []:
+            lines.append(
+                f"| {row.get('kind')} | `{row.get('name')}` | {row.get('valid')} | {row.get('invalid')} |"
+            )
+        lines.extend(["", "### Invariants", ""])
+        lines.append("| Invariant | Status | Detail |")
+        lines.append("| --- | --- | --- |")
+        for item in coverage.get("invariants") or []:
+            detail = str(item.get("detail") or "").replace("|", "/")
+            lines.append(f"| `{item.get('name')}` | {item.get('status')} | {detail} |")
+        lines.extend(["", "### Combat", ""])
+        combat = coverage.get("combat") or {}
+        lines.append(
+            f"win={'yes' if combat.get('win') else 'NOT TESTED'}, "
+            f"lose={'yes' if combat.get('lose') else 'NOT TESTED'}, "
+            f"draw={'yes' if combat.get('draw') else 'NOT TESTED'}"
+        )
+        gaps = coverage.get("gaps") or []
+        lines.extend(["", "### Gaps", ""])
+        if not gaps:
+            lines.append("None.")
+        else:
+            for gap in gaps:
+                lines.append(f"- {gap}")
+    counts_by_type = payload.get("commands_by_type") or {}
+    if counts_by_type:
+        lines.extend(["", "## Accepted commands by type", ""])
+        for name in sorted(counts_by_type):
+            lines.append(f"- `{name}`: {counts_by_type[name]}")
     lines.extend(["", "## Audit chain", ""])
     chain = payload.get("audit_chain") or {}
     lines.append(

@@ -9,15 +9,16 @@ The server computes both. The admin page only displays the JSON.
 
 ## What is traced
 
-Every accepted command (`attack`, `move`, `recall`, `build`, `research`) gets a new `trace_id` (a UUID). That id is copied onto:
+Every accepted command (`attack`, `move`, `recall`, `garrison`, `train_units`, `found_city`, `transfer_resources`, `build`, `research`) gets a new `trace_id` (a UUID). That id is copied onto:
 
 - the `player_commands` row
 - the movement and the event the command schedules
 - a follow-on return movement and its `ARMY_RETURN` event
 - the battle report
-- ledger rows the command itself applies (`loot_lost`, `loot_gained`, build and research effects)
+- ledger rows the command itself applies (`loot_lost`, `loot_gained`, `train`, `found_city`, `transfer_out`, `transfer_in`, build and research effects)
+- production and upkeep rows written while that command is accruing a city
 
-City production and upkeep are not stamped with the command's `trace_id`. They are time accrual, shared by whatever next touches the city. The trace report lists them as **NOT CHECKED**. It does not call them PASS.
+A city read that accrues with no command still stores a null `trace_id`. Those rows are not attached to a later command. When a trace has no production or upkeep rows, `production_upkeep` is **NOT CHECKED**. It is not PASS. When the rows are present, the check recomputes `rate * elapsed_seconds // 3600` from the idempotency key (and catalog upkeep from the stored garrison composition) and returns PASS or FAIL. A legacy key that does not record the rate or the composition stays NOT CHECKED unless the row itself contradicts a value that can be recomputed, in which case it is FAIL.
 
 Rows that already existed before this migration, and any later row whose `trace_id` is null, are **LEGACY / NOT TRACED**. The search API does not invent a link for them. Looking up a legacy event does not attach it to some other command that happens to share an army.
 
@@ -37,7 +38,8 @@ The checks that do run:
 
 - **ledger_conservation.** For each of wood, food, iron, and gold on this trace, resources out equal resources in plus recorded losses. "Out" is the sum of negative deltas. "In" is the sum of positive deltas. Recorded losses are the battle report's loot when the army was destroyed before it could deposit that loot. A hole in the ledger is not relabeled as a loss. While the march is still open the check stays `INCOMPLETE` unless the rows already contradict the report.
 - **missing_links.** A battle report must point at an event and a movement in the trace. A traced transaction must point at an event in the trace. A return movement's `cause_event_id` must be an event in the trace. A completed build or research event must have its one effect row.
-- **duplicate_processing.** The same event, resource, and reason must not appear twice. The same movement must not have two live events of the same type. One event must not have two battle reports.
+- **duplicate_processing.** The same event, city, resource, and reason must not appear twice. Two cities accrued by one transfer are not a duplicate. The same movement must not have two live events of the same type. One event must not have two battle reports.
+- **production_upkeep.** Scored only for accrual rows on this trace, using the rate, window, and garrison composition stored on the ledger key.
 - **army_resolution.** An army that departed must still be en route (`INCOMPLETE`), or have returned, died, or arrived. A cancelled march is finished. Build and research do not march an army, so this check is `NOT CHECKED` for them.
 
 The timeline is ordered by game time. When two steps share a timestamp, the order is command, outbound movement, arrival event, battle, loot taken, report, return departure, return arrival, loot deposited.

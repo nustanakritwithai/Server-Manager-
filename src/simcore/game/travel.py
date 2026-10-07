@@ -22,18 +22,18 @@ def army_speed(stacks: tuple[UnitStack, ...] | list[UnitStack]) -> int:
     return min(speeds)
 
 
-def travel_seconds(x1: float, y1: float, x2: float, y2: float, stacks: tuple[UnitStack, ...] | list[UnitStack]) -> int:
-    """Seconds to march from (x1, y1) to (x2, y2).
+def fixed_speed_seconds(x1: float, y1: float, x2: float, y2: float, speed: int) -> int:
+    """Seconds to cover the distance at a fixed tiles-per-hour speed.
 
-    time = distance / speed, with speed in tiles per hour.
     Near-integer results caused by binary floating point are snapped, then
-    anything else is rounded up so the army never arrives early.
+    anything else is rounded up so the arrival is never early.
     """
 
     dist = distance(x1, y1, x2, y2)
     if dist == 0:
         raise ValueError("zero distance")
-    speed = army_speed(stacks)
+    if speed <= 0:
+        raise ValueError("speed must be positive")
     raw = dist * 3600 / speed
     nearest = round(raw)
     if abs(raw - nearest) < 1e-6:
@@ -41,6 +41,15 @@ def travel_seconds(x1: float, y1: float, x2: float, y2: float, stacks: tuple[Uni
     else:
         seconds = math.ceil(raw - 1e-9)
     return max(1, int(seconds))
+
+
+def travel_seconds(x1: float, y1: float, x2: float, y2: float, stacks: tuple[UnitStack, ...] | list[UnitStack]) -> int:
+    """Seconds to march from (x1, y1) to (x2, y2).
+
+    time = distance / speed, with speed in tiles per hour.
+    """
+
+    return fixed_speed_seconds(x1, y1, x2, y2, army_speed(stacks))
 
 
 def travel_progress(depart_at: datetime, arrive_at: datetime, now: datetime) -> float:

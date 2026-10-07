@@ -82,6 +82,14 @@ GET /v1/map/cities
 Authorization: Bearer <access_token>
 
 POST /v1/commands/attack
+POST /v1/commands/move
+POST /v1/commands/recall
+POST /v1/commands/build
+POST /v1/commands/research
+POST /v1/commands/train
+POST /v1/commands/found-city
+POST /v1/commands/garrison
+POST /v1/commands/transfer
 Authorization: Bearer <access_token>
 Idempotency-Key: <client-generated unique string>
 {"army_id":1,"target_city_id":2}

@@ -94,7 +94,7 @@ jobs:
           SIMCORE_ADMIN_TOKEN: dev-admin
           SIMCORE_WORKER_ID: simulator
         run: |
-          python -m simcore.sim --mode ci --players 4 --seed 8741 --ticks 4 --command-rate 1 --report-dir sim-reports/a
+          python -m simcore.sim --mode full --players 4 --seed 8741 --ticks 2 --command-rate 1 --report-dir sim-reports/a
 
       - name: Second CI run
         env:
@@ -103,7 +103,7 @@ jobs:
           SIMCORE_ADMIN_TOKEN: dev-admin
           SIMCORE_WORKER_ID: simulator
         run: |
-          python -m simcore.sim --mode ci --players 4 --seed 8741 --ticks 4 --command-rate 1 --report-dir sim-reports/b
+          python -m simcore.sim --mode full --players 4 --seed 8741 --ticks 2 --command-rate 1 --report-dir sim-reports/b
 
       - name: Same seed must match
         run: |
@@ -121,9 +121,12 @@ jobs:
           if first.get("command_sequence") != second.get("command_sequence"):
               errors.append("command sequences differ")
           for label, report in (("A", first), ("B", second)):
-              coverage = report.get("auth_coverage") or {}
-              if coverage.get("verdict") != "COMPLETE":
-                  errors.append(label + " auth coverage " + json.dumps(coverage.get("gaps")))
+              auth = report.get("auth_coverage") or {}
+              if auth.get("verdict") != "COMPLETE":
+                  errors.append(label + " auth coverage " + json.dumps(auth.get("gaps")))
+              game = report.get("coverage") or {}
+              if game.get("verdict") != "COMPLETE":
+                  errors.append(label + " coverage " + str(game.get("verdict")) + " " + json.dumps(game.get("gaps")))
           if errors:
               print("\n".join(errors), file=sys.stderr)
               sys.exit(1)

@@ -28,6 +28,16 @@ _UNITS = {
     "random": [{"type": "infantry", "count": 30}],
 }
 
+# Full-mode roster. Two 20-cavalry armies, and two single militia so a 1v1
+# fight draws, a militia versus cavalry loses, and an empty city is a win.
+_COVERAGE_UNITS = {
+    "aggressive": [{"type": "cavalry", "count": 20}],
+    "defensive": [{"type": "militia", "count": 1}],
+    "random": [{"type": "militia", "count": 1}],
+}
+
+_ROSTERS = {"default": _UNITS, "coverage": _COVERAGE_UNITS}
+
 # Homes are 6 tiles apart so a cavalry march is exactly 1800 game seconds.
 _PLAYER_SPACING = 6
 _SECOND_CITY_DY = 2
@@ -46,10 +56,11 @@ def opening_resources(player_count: int) -> dict[str, int]:
     return {name: amount * cities for name, amount in _HOME_RESOURCES.items()}
 
 
-def opening_units(player_count: int) -> dict[str, int]:
+def opening_units(player_count: int, roster: str = "default") -> dict[str, int]:
+    units = _ROSTERS[roster]
     totals: dict[str, int] = {}
     for index in range(player_count):
-        for stack in _UNITS[profile_for(index)]:
+        for stack in units[profile_for(index)]:
             totals[stack["type"]] = totals.get(stack["type"], 0) + int(stack["count"])
     return totals
 
@@ -58,7 +69,7 @@ def expected_army_count(player_count: int) -> int:
     return player_count
 
 
-def seed_bots(session: Session, now: datetime, player_count: int) -> dict[str, object]:
+def seed_bots(session: Session, now: datetime, player_count: int, roster: str = "default") -> dict[str, object]:
     """Insert the bot world. Refuses when any player already exists.
 
     Does not delete or truncate. A second call on a used database raises.
@@ -66,6 +77,9 @@ def seed_bots(session: Session, now: datetime, player_count: int) -> dict[str, o
 
     if player_count < 1:
         raise ValueError("player_count must be at least 1")
+    if roster not in _ROSTERS:
+        raise ValueError(f"unknown roster {roster}")
+    units = _ROSTERS[roster]
     existing = session.scalar(select(func.count()).select_from(Player))
     if existing:
         raise RuntimeError(
@@ -78,26 +92,36 @@ def seed_bots(session: Session, now: datetime, player_count: int) -> dict[str, o
         player = Player(name=name, research={}, created_at=now)
         session.add(player)
         session.flush()
-        _add_holdings(session, player, index, now)
+        _add_holdings(session, player, index, now, units)
 
     return {
         "players": player_count,
         "profiles": [profile_for(index) for index in range(player_count)],
         "resources": opening_resources(player_count),
-        "units": opening_units(player_count),
+        "units": opening_units(player_count, roster=roster),
+        "roster": roster,
         "armies": expected_army_count(player_count),
     }
 
 
-def seed_holdings(session: Session, now: datetime, names: list[str]) -> dict[str, object]:
+def seed_holdings(
+    session: Session,
+    now: datetime,
+    names: list[str],
+    roster: str = "default",
+) -> dict[str, object]:
     """Attach a home, a camp, and one army to players that already exist.
 
     Registration creates the player rows. This does not create players and does
     not delete anything. It refuses when the database already has a city.
+    ``roster`` selects the opening stacks. Full mode uses ``coverage``.
     """
 
     if not names:
         raise ValueError("names must not be empty")
+    if roster not in _ROSTERS:
+        raise ValueError(f"unknown roster {roster}")
+    units = _ROSTERS[roster]
     existing = session.scalar(select(func.count()).select_from(City))
     if existing:
         raise RuntimeError(
@@ -108,18 +132,25 @@ def seed_holdings(session: Session, now: datetime, names: list[str]) -> dict[str
         player = session.scalar(select(Player).where(Player.name == name))
         if player is None:
             raise RuntimeError(f"player {name} is not registered")
-        _add_holdings(session, player, index, now)
+        _add_holdings(session, player, index, now, units)
     count = len(names)
     return {
         "players": count,
         "profiles": [profile_for(index) for index in range(count)],
         "resources": opening_resources(count),
-        "units": opening_units(count),
+        "units": opening_units(count, roster=roster),
+        "roster": roster,
         "armies": expected_army_count(count),
     }
 
 
-def _add_holdings(session: Session, player: Player, index: int, now: datetime) -> None:
+def _add_holdings(
+    session: Session,
+    player: Player,
+    index: int,
+    now: datetime,
+    units: dict[str, list[dict[str, object]]],
+) -> None:
     profile = profile_for(index)
     name = player.name
     home_x = index * _PLAYER_SPACING
@@ -134,7 +165,7 @@ def _add_holdings(session: Session, player: Player, index: int, now: datetime) -
             home_city_id=home.id,
             location_city_id=home.id,
             status=ArmyStatus.GARRISONED,
-            units=list(_UNITS[profile]),
+            units=list(units[profile]),
             created_at=now,
         )
     )

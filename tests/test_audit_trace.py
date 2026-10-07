@@ -86,11 +86,11 @@ def test_attack_trace_passes_after_the_army_returns(client, frozen) -> None:
     for check in body["integrity"]["checks"]:
         if check["status"] != "NOT CHECKED":
             assert check["status"] == "PASS", check
+    production_check = _check(body, "production_upkeep")
+    assert production_check["status"] == "PASS"
     not_checked = body["integrity"]["not_checked"]
-    assert not_checked
     assert all(item["status"] == "NOT CHECKED" for item in not_checked)
-    assert all(item["status"] != "PASS" for item in not_checked)
-    assert any(item["name"] == "production_upkeep" for item in not_checked)
+    assert all(item["name"] != "production_upkeep" for item in not_checked)
 
     types = [step["type"] for step in body["steps"]]
     command_at = types.index("command")
@@ -123,7 +123,7 @@ def test_attack_trace_passes_after_the_army_returns(client, frozen) -> None:
         loot = [row for row in rows if row.reason in {"loot_lost", "loot_gained"}]
         production = [row for row in rows if row.reason == "production"]
         assert loot and all(row.trace_id == trace_id for row in loot)
-        assert production and all(row.trace_id is None for row in production)
+        assert production and all(row.trace_id == trace_id for row in production)
     finally:
         session.close()
 

@@ -15,14 +15,26 @@ from typing import Any
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
-from simcore.constants import RESOURCES, ArmyStatus, EventStatus, MovementStatus, Reason
+from simcore.constants import RESOURCES, ArmyStatus, EventStatus, EventType, MovementStatus, Reason
 from simcore.db import get_sessionmaker
 from simcore.models import Army, BattleReport, City, Event, Movement, PlayerCommand, Transaction
 from simcore.sim.http import ApiClient
 from simcore.sim.seed_world import expected_army_count, opening_resources, opening_units
 from simcore.snapshot import world_checksum
 
-_ALLOWED_REASONS = frozenset({Reason.PRODUCTION, Reason.UPKEEP, Reason.LOOT_LOST, Reason.LOOT_GAINED})
+_ALLOWED_REASONS = frozenset(
+    {
+        Reason.PRODUCTION,
+        Reason.UPKEEP,
+        Reason.LOOT_LOST,
+        Reason.LOOT_GAINED,
+        Reason.TRAIN,
+        Reason.FOUND_CITY,
+        Reason.TRANSFER_OUT,
+        Reason.TRANSFER_IN,
+    }
+)
+_SEEDED_MODES = frozenset({"ci", "full"})
 _PASS = "PASS"
 _FAIL = "FAIL"
 _NOT_CHECKED = "NOT CHECKED"
@@ -55,18 +67,23 @@ def verify_run(
     player_count: int | None,
     thresholds: dict[str, Any],
     max_event_lag_seconds: float,
+    roster: str = "default",
 ) -> dict[str, Any]:
-    """Score the world. ``player_count`` is set when CI seeded the map."""
+    """Score the world. ``player_count`` is set when CI or full mode seeded the map."""
 
     monitoring = _read_monitoring(api)
     end_lag = _lag_value(monitoring)
     traces = _read_traces(api)
     audit = _read_audit(api)
-    snapshot = _read_snapshot(api) if mode == "ci" or thresholds.get("snapshot_checksum_required") else _snapshot_skipped()
+    snapshot = (
+        _read_snapshot(api)
+        if mode in _SEEDED_MODES or thresholds.get("snapshot_checksum_required")
+        else _snapshot_skipped()
+    )
 
     session = _open_readonly()
     try:
-        db = _db_checks(session, player_count=player_count)
+        db = _db_checks(session, player_count=player_count, roster=roster)
         live_checksum = world_checksum(session)
     finally:
         session.rollback()
@@ -77,7 +94,7 @@ def verify_run(
 
     invariants.append(_score_traces(traces, failed))
     invariants.append(_score_legacy(db, thresholds, failed))
-    invariants.append(_score_not_checked(traces))
+    invariants.append(_score_production(traces, failed))
     invariants.extend(_score_db(db, failed))
     invariants.append(_score_audit(audit, failed))
     invariants.extend(_score_monitoring(monitoring, failed))
@@ -197,6 +214,7 @@ def _read_traces(api: ApiClient) -> dict[str, Any]:
     verdicts = {"PASS": 0, "FAIL": 0, "INCOMPLETE": 0}
     failures: list[dict[str, Any]] = []
     not_checked: list[dict[str, Any]] = []
+    production: list[dict[str, Any]] = []
     incomplete_without_pending = 0
     rows: list[dict[str, Any]] = []
     for entry in traces:
@@ -216,6 +234,15 @@ def _read_traces(api: ApiClient) -> dict[str, Any]:
         for item in integrity.get("not_checked") or []:
             if isinstance(item, dict):
                 not_checked.append({"trace_id": trace_id, "name": item.get("name"), "status": item.get("status")})
+        for check in integrity.get("checks") or []:
+            if isinstance(check, dict) and check.get("name") == "production_upkeep":
+                production.append(
+                    {
+                        "trace_id": trace_id,
+                        "status": str(check.get("status") or _NOT_CHECKED),
+                        "detail": check.get("detail"),
+                    }
+                )
         pending = _trace_still_open(detail)
         if verdict == "INCOMPLETE" and not pending:
             incomplete_without_pending += 1
@@ -240,6 +267,7 @@ def _read_traces(api: ApiClient) -> dict[str, Any]:
         "failures": failures,
         "legacy": legacy_search,
         "not_checked": not_checked,
+        "production": production,
         "rows": rows,
     }
 
@@ -284,12 +312,23 @@ def _read_snapshot(api: ApiClient) -> dict[str, Any]:
         headers=api.admin_headers,
     )
     checksum_ok = isinstance(inspected, dict) and inspected.get("checksum_ok") is True
+    if inspect_status == 200 and checksum_ok and checksum:
+        detail = None
+    elif inspect_status != 200:
+        message = ""
+        if isinstance(inspected, dict):
+            error = inspected.get("error")
+            if isinstance(error, dict) and error.get("message"):
+                message = f": {error.get('message')}"
+        detail = f"inspect HTTP {inspect_status}{message}"
+    else:
+        detail = "snapshot inspect did not confirm the stored checksum"
     return {
-        "status": "PASS" if inspect_status == 200 and checksum_ok and checksum else "FAIL",
+        "status": "PASS" if detail is None else "FAIL",
         "checksum": checksum,
         "snapshot_id": snapshot_id,
         "checksum_ok": checksum_ok,
-        "detail": None if checksum_ok else "snapshot inspect did not confirm the stored checksum",
+        "detail": detail,
     }
 
 
@@ -302,12 +341,12 @@ def _snapshot_skipped() -> dict[str, Any]:
     }
 
 
-def _db_checks(session: Session, *, player_count: int | None) -> dict[str, Any]:
+def _db_checks(session: Session, *, player_count: int | None, roster: str) -> dict[str, Any]:
     problems: list[dict[str, Any]] = []
     problems.extend(_negative_resources(session))
     problems.extend(_ledger(session, player_count=player_count))
     problems.extend(_events(session))
-    problems.extend(_armies(session, player_count=player_count))
+    problems.extend(_armies(session, player_count=player_count, roster=roster))
     legacy_commands = int(
         session.scalar(select(func.count()).select_from(PlayerCommand).where(PlayerCommand.trace_id.is_(None)))
         or 0
@@ -367,7 +406,7 @@ def _ledger(session: Session, *, player_count: int | None) -> list[dict[str, Any
             problems.append(
                 _fail(
                     "ledger_conservation",
-                    f"transaction {row.id} reason {row.reason!r} is outside production, upkeep, and loot",
+                    f"transaction {row.id} reason {row.reason!r} is outside the allowed ledger reasons",
                     trace_id=row.trace_id,
                 )
             )
@@ -379,6 +418,14 @@ def _ledger(session: Session, *, player_count: int | None) -> list[dict[str, Any
             problems.append(_fail("ledger_conservation", f"production delta {row.delta}", trace_id=row.trace_id))
         if row.reason == Reason.UPKEEP and row.delta > 0:
             problems.append(_fail("ledger_conservation", f"upkeep delta {row.delta}", trace_id=row.trace_id))
+        if row.reason in {Reason.TRAIN, Reason.FOUND_CITY, Reason.TRANSFER_OUT} and row.delta > 0:
+            problems.append(
+                _fail("ledger_conservation", f"{row.reason} delta {row.delta} is positive", trace_id=row.trace_id)
+            )
+        if row.reason == Reason.TRANSFER_IN and row.delta < 0:
+            problems.append(
+                _fail("ledger_conservation", f"transfer_in delta {row.delta} is negative", trace_id=row.trace_id)
+            )
         sums[row.resource] += int(row.delta)
         if row.city_id is not None:
             by_city[(int(row.city_id), row.resource)].append(row)
@@ -531,17 +578,23 @@ def _army_destroyed(session: Session, army_id: int) -> bool:
 def _events(session: Session) -> list[dict[str, Any]]:
     problems: list[dict[str, Any]] = []
     duplicate = session.execute(
-        select(Transaction.source_event_id, Transaction.resource, Transaction.reason, func.count())
+        select(
+            Transaction.source_event_id,
+            Transaction.city_id,
+            Transaction.resource,
+            Transaction.reason,
+            func.count(),
+        )
         .where(Transaction.source_event_id.is_not(None))
-        .group_by(Transaction.source_event_id, Transaction.resource, Transaction.reason)
+        .group_by(Transaction.source_event_id, Transaction.city_id, Transaction.resource, Transaction.reason)
         .having(func.count() > 1)
     ).all()
-    for event_id, resource, reason, count in duplicate:
+    for event_id, city_id, resource, reason, count in duplicate:
         trace_id = session.scalar(select(Event.trace_id).where(Event.id == event_id))
         problems.append(
             _fail(
                 "duplicate_processing",
-                f"event {event_id} has {count} {reason} rows for {resource}",
+                f"event {event_id} city {city_id} has {count} {reason} rows for {resource}",
                 trace_id=trace_id,
             )
         )
@@ -578,14 +631,34 @@ def _events(session: Session) -> list[dict[str, Any]]:
     return problems
 
 
-def _armies(session: Session, *, player_count: int | None) -> list[dict[str, Any]]:
+def _completed_training(session: Session) -> tuple[dict[str, int], int]:
+    """Units added by completed training, and how many of those spawned a new army."""
+
+    trained: dict[str, int] = defaultdict(int)
+    spawned = 0
+    events = session.scalars(
+        select(Event).where(Event.type == EventType.TRAIN_COMPLETE, Event.status == EventStatus.COMPLETED)
+    ).all()
+    for event in events:
+        payload = event.payload or {}
+        unit_type = str(payload.get("unit_type") or "")
+        count = int(payload.get("count") or 0)
+        if unit_type and count > 0:
+            trained[unit_type] += count
+        if payload.get("spawned"):
+            spawned += 1
+    return trained, spawned
+
+
+def _armies(session: Session, *, player_count: int | None, roster: str) -> list[dict[str, Any]]:
     problems: list[dict[str, Any]] = []
     armies = session.scalars(select(Army).order_by(Army.id)).all()
-    if player_count is not None and len(armies) != expected_army_count(player_count):
+    trained, spawned = _completed_training(session)
+    if player_count is not None and len(armies) != expected_army_count(player_count) + spawned:
         problems.append(
             _fail(
                 "armies",
-                f"army count {len(armies)} != seeded {expected_army_count(player_count)}",
+                f"army count {len(armies)} != seeded {expected_army_count(player_count)} + spawned trains {spawned}",
             )
         )
     active = session.execute(
@@ -610,23 +683,24 @@ def _armies(session: Session, *, player_count: int | None) -> list[dict[str, Any
             elif count:
                 totals[str(stack.get("type"))] += count
     if player_count is not None:
-        opening = opening_units(player_count)
+        opening = opening_units(player_count, roster=roster)
+        expected = dict(opening)
+        for unit_type, count in trained.items():
+            expected[unit_type] = expected.get(unit_type, 0) + count
         casualties = _casualty_totals(session)
-        for unit_type, seeded in opening.items():
+        for unit_type, seeded in expected.items():
             left = totals.get(unit_type, 0) + casualties.get(unit_type, 0)
             if left != seeded:
                 problems.append(
                     _fail(
                         "armies",
                         f"{unit_type}: alive {totals.get(unit_type, 0)} + casualties {casualties.get(unit_type, 0)} "
-                        f"!= seeded {seeded}",
+                        f"!= seeded {opening.get(unit_type, 0)} + trained {trained.get(unit_type, 0)}",
                     )
                 )
-        for unit_type, alive in totals.items():
-            if unit_type not in opening:
+        for unit_type in totals:
+            if unit_type not in expected:
                 problems.append(_fail("armies", f"unexpected unit type {unit_type}"))
-            elif alive > opening[unit_type]:
-                problems.append(_fail("armies", f"{unit_type} alive {alive} exceeds seeded {opening[unit_type]}"))
     return problems
 
 
@@ -670,28 +744,45 @@ def _score_legacy(db: dict[str, Any], thresholds: dict[str, Any], failed: list[d
         item = _fail("legacy_commands", f"{count} player commands are LEGACY / NOT TRACED")
         failed.append(item)
         return {**item, "required": True}
-    return {
-        "invariant": "legacy_commands",
-        "status": "REPORTED",
-        "required": False,
-        "trace_id": None,
-        "detail": f"{count} LEGACY command rows. LEGACY is not counted as PASS.",
-        "count": count,
-    }
+    return _pass(
+        "legacy_commands",
+        f"{count} LEGACY command rows, within the limit of {limit}. A LEGACY row is not a trace PASS.",
+    )
 
 
-def _score_not_checked(traces: dict[str, Any]) -> dict[str, Any]:
-    names = sorted({str(item.get("name")) for item in traces["not_checked"] if item.get("name")})
+def _score_production(traces: dict[str, Any], failed: list[dict[str, Any]]) -> dict[str, Any]:
+    """PASS only when at least one trace's production/upkeep check passed and none failed.
+
+    Traces with no accrual rows stay NOT CHECKED. They are listed in the detail
+    and are not called PASS.
+    """
+
+    rows = list(traces.get("production") or [])
+    failed_rows = [row for row in rows if row.get("status") == _FAIL]
+    passed = [row for row in rows if row.get("status") == _PASS]
+    unchecked = [row for row in rows if row.get("status") == _NOT_CHECKED]
+    if failed_rows:
+        item = _fail(
+            "production_upkeep",
+            f"{len(failed_rows)} trace(s) failed production/upkeep; first: {failed_rows[0].get('detail')}",
+            trace_id=failed_rows[0].get("trace_id"),
+        )
+        failed.append(item)
+        return {**item, "required": True}
+    if passed:
+        return _pass(
+            "production_upkeep",
+            f"{len(passed)} trace(s) PASS. {len(unchecked)} trace(s) had no verifiable accrual "
+            "and stay NOT CHECKED. NOT CHECKED is not PASS.",
+        )
     return {
         "invariant": "production_upkeep",
         "status": _NOT_CHECKED,
         "required": False,
         "trace_id": None,
         "detail": (
-            "City production and upkeep are not on the command trace. "
-            f"Server marked NOT CHECKED on {len(traces['not_checked'])} trace entries"
-            + (f" ({', '.join(names)})" if names else "")
-            + ". This is not PASS."
+            "No command trace had production or upkeep rows that could be recomputed. "
+            f"{len(unchecked)} trace(s) are NOT CHECKED. This is not PASS."
         ),
     }
 
@@ -799,7 +890,7 @@ def _score_snapshot(
         return {
             "invariant": "snapshot_checksum",
             "status": _NOT_CHECKED,
-            "required": mode == "ci",
+            "required": mode in _SEEDED_MODES,
             "trace_id": None,
             "detail": snapshot.get("detail"),
         }

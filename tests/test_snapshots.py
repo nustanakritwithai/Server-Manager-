@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import time
 from datetime import datetime
 
 from sqlalchemy import func, select
@@ -487,3 +488,59 @@ def test_battle_report_and_march_roundtrip_through_restore(client, frozen) -> No
         assert all(row["trace_id"] == restored_trace for row in restored_doc["events"])
     finally:
         session.close()
+
+
+def test_snapshot_inspect_sees_the_row_as_soon_as_create_returns(db: None, frozen) -> None:
+    """Create commits before the response, so a live server can inspect immediately.
+
+    The session dependency commits only after the response bytes are sent. On
+    uvicorn that lets the next request observe a missing snapshot.
+    """
+
+    import socket
+    import threading
+
+    import httpx
+    import uvicorn
+
+    from simcore.main import create_app
+
+    app = create_app(base_clock=frozen)
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = int(sock.getsockname()[1])
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", access_log=False)
+    server = uvicorn.Server(config)
+    server.install_signal_handlers = lambda: None
+    thread = threading.Thread(target=server.run, name="snapshot-race", daemon=True)
+    thread.start()
+    try:
+        with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=30.0) as client:
+            ready = 0
+            for _ in range(50):
+                try:
+                    ready_response = client.get("/health/ready")
+                except httpx.HTTPError:
+                    time.sleep(0.05)
+                    continue
+                ready = ready_response.status_code
+                if ready == 200:
+                    break
+                time.sleep(0.05)
+            assert ready == 200
+            for _ in range(40):
+                created = client.post(
+                    "/v1/admin/snapshots",
+                    headers={**ADMIN, "content-type": "application/json"},
+                    json={"reason": "MANUAL"},
+                )
+                assert created.status_code == 200, created.text
+                snapshot_id = created.json()["snapshot_id"]
+                inspected = client.get(f"/v1/admin/snapshots/{snapshot_id}/inspect", headers=ADMIN)
+                assert inspected.status_code == 200, inspected.text
+                body = inspected.json()
+                assert body["checksum_ok"] is True
+                assert body["checksum"] == created.json()["checksum"]
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
