@@ -345,8 +345,8 @@
     );
   }
 
-  async function createSnapshot(reason) {
-    const body = await request("/v1/admin/snapshots", { method: "POST", json: { reason: reason } });
+  async function createSnapshot() {
+    const body = await request("/v1/admin/snapshots", { method: "POST", json: { reason: "MANUAL" } });
     showResult("snap-result", body);
     await loadSnapshots();
   }
@@ -828,8 +828,7 @@
       location.hash = "world/" + button.getAttribute("data-world");
     });
   });
-  $("snap-manual").addEventListener("click", () => createSnapshot("MANUAL").catch(showError));
-  $("snap-auto").addEventListener("click", () => createSnapshot("AUTO").catch(showError));
+  $("snap-manual").addEventListener("click", () => createSnapshot().catch(showError));
   $("snap-refresh").addEventListener("click", () => loadSnapshots().catch(showError));
   $("restore-form").addEventListener("submit", (event) => restoreSnapshot(event).catch(showError));
   $("restore-ack").addEventListener("change", syncRestore);
