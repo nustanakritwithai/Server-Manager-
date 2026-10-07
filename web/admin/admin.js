@@ -1264,7 +1264,7 @@
     if (head === "trace") {
       return { view: "trace", tab: null, entity: parts[1] || null, id: parts.slice(2).join("/") || null };
     }
-    const views = { dashboard: true, snapshots: true, events: true, battles: true, ledger: true, actions: true, trace: true, audit: true, monitoring: true };
+    const views = { dashboard: true, snapshots: true, events: true, battles: true, ledger: true, actions: true, trace: true, audit: true, map: true, monitoring: true };
     if (views[head]) return { view: head, tab: null, entity: null, id: tail };
     return { view: "dashboard", tab: null, entity: null, id: null };
   }
@@ -1287,6 +1287,7 @@
     const parsed = parseHash();
     state.view = parsed.view;
     if (parsed.tab) state.worldTab = parsed.tab;
+    if (window.SimcoreWorldMap) window.SimcoreWorldMap.onView(parsed.view);
     showView(parsed.view);
     if (parsed.view !== "monitoring") stopMonitorRefresh();
     clearError();
@@ -1307,6 +1308,9 @@
       else if (parsed.view === "monitoring") {
         await loadMonitoring();
         if (gen === generation) startMonitorRefresh();
+      } else if (parsed.view === "map") {
+        if (!window.SimcoreWorldMap) throw new Error("Map script did not load");
+        await window.SimcoreWorldMap.show(request);
       }
     } catch (error) {
       if (gen === generation) showError(error);
