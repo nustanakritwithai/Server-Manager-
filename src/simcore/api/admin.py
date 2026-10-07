@@ -32,6 +32,7 @@ from simcore.config import Settings
 from simcore.game.queue import run_event_now
 from simcore.models import Army
 from simcore.present import army_body
+from simcore.api.monitoring import router as monitoring_router
 from simcore.api.snapshots import router as snapshot_router
 from simcore.worker import run_once
 
@@ -40,6 +41,7 @@ router.include_router(admin_login_router)
 router.include_router(snapshot_router)
 router.include_router(trace_router)
 router.include_router(audit_router)
+router.include_router(monitoring_router)
 router.include_router(world_map_router)
 
 

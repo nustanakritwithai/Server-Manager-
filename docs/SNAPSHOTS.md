@@ -40,7 +40,7 @@ The payload is canonical JSON in `world_snapshot_payloads.body`. It includes eve
 - `transactions` (including nullable `trace_id`)
 - `world_state` fields `id`, `offset_seconds`, and `world_version`
 
-It does not include other snapshot rows or the `audit_log`. It also does not include the operational gates `commands_open` and `worker_paused`. Those gates are how restore pauses the world; they are not part of the world you roll back to. `world_time` is metadata on the snapshot row. The hashed clock state is `offset_seconds`. Schema version 2 is the document that includes command traces. A snapshot written at version 1 stays listed and is not restored by this server.
+It does not include other snapshot rows, the `audit_log`, or the monitoring tables (`worker_heartbeats`, `worker_process_marks`, `monitoring_samples`, `monitoring_check_state`). It also does not include the operational gates `commands_open` and `worker_paused`. Those gates are how restore pauses the world; they are not part of the world you roll back to. `world_time` is metadata on the snapshot row. The hashed clock state is `offset_seconds`. Schema version 2 is the document that includes command traces. A snapshot written at version 1 stays listed and is not restored by this server.
 
 Rows are ordered by primary key. A successful restore puts those primary keys back and moves each id sequence to `MAX(id)`.
 
