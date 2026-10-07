@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from simcore.api.admin_login import router as admin_login_router
 from simcore.api.deps import get_clock, get_session, require_admin
 from simcore.api.trace_admin import audit_router, trace_router
+from simcore.api.world_map import router as world_map_router
 from simcore.audit import record_admin_action
 from simcore.api.inspect import (
     army_detail,
@@ -39,6 +40,7 @@ router.include_router(admin_login_router)
 router.include_router(snapshot_router)
 router.include_router(trace_router)
 router.include_router(audit_router)
+router.include_router(world_map_router)
 
 
 class AdvanceIn(BaseModel):

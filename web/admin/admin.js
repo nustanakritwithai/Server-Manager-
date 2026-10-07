@@ -1061,7 +1061,7 @@
     if (head === "trace") {
       return { view: "trace", tab: null, entity: parts[1] || null, id: parts.slice(2).join("/") || null };
     }
-    const views = { dashboard: true, snapshots: true, events: true, battles: true, ledger: true, actions: true, trace: true, audit: true };
+    const views = { dashboard: true, snapshots: true, events: true, battles: true, ledger: true, actions: true, trace: true, audit: true, map: true };
     if (views[head]) return { view: head, tab: null, entity: null, id: tail };
     return { view: "dashboard", tab: null, entity: null, id: null };
   }
@@ -1084,6 +1084,7 @@
     const parsed = parseHash();
     state.view = parsed.view;
     if (parsed.tab) state.worldTab = parsed.tab;
+    if (window.SimcoreWorldMap) window.SimcoreWorldMap.onView(parsed.view);
     showView(parsed.view);
     clearError();
     try {
@@ -1100,6 +1101,10 @@
       else if (parsed.view === "ledger") await loadLedger();
       else if (parsed.view === "trace") await loadTrace(parsed);
       else if (parsed.view === "audit") await loadAudit();
+      else if (parsed.view === "map") {
+        if (!window.SimcoreWorldMap) throw new Error("Map script did not load");
+        await window.SimcoreWorldMap.show(request);
+      }
     } catch (error) {
       if (gen === generation) showError(error);
     }

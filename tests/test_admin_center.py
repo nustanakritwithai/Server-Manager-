@@ -34,6 +34,7 @@ READ_PATHS = (
     "/v1/admin/reports/1",
     "/v1/admin/transactions",
     "/v1/admin/snapshots",
+    "/v1/admin/world-map",
 )
 
 

@@ -93,6 +93,7 @@ Useful admin and CLI entry points:
 | Battle reports | `GET /v1/admin/reports` | |
 | Event trace | `GET /v1/admin/trace/{trace_id}`, `GET /v1/admin/trace` | |
 | Audit log | `GET /v1/admin/audit` | |
+| World map | `GET /v1/admin/world-map` | |
 
 Admin routes are on unless `SIMCORE_ENV=production`. In production set `SIMCORE_ENABLE_ADMIN=1` to turn them back on.
 
@@ -128,6 +129,10 @@ An accepted command gets a `trace_id`. That id is copied onto the movement, the 
 `GET /v1/admin/audit` is the append-only log of admin actions (login success and failure, logout, revoke-all, snapshot create, inspect, restore, clock advance, run-event, worker tick) plus a hash-chain check of the whole table. Passwords, session tokens, and password hashes are not stored. There is no update or delete route.
 
 The admin page has an Event trace view and an Audit log tab. They render the server JSON. Details are in [docs/AUDIT_TRACE.md](docs/AUDIT_TRACE.md). No new environment variable is required.
+
+## World map
+
+The admin Map tab is a read-only god view: every city, every army, and every in-progress movement, with no fog of war. `GET /v1/admin/world-map` uses the same admin auth as the other `/v1/admin` routes. Current positions are interpolated on the server from the stored origin, destination, `depart_at`, and `arrive_at`. The page only draws that response. There is no migration and no new environment variable. Details, the response fields, and the VPS update note are in [docs/WORLD_MAP.md](docs/WORLD_MAP.md).
 
 ## Run without Docker
 
@@ -369,6 +374,8 @@ src/simcore/
   world.py                world_version and maintenance gates
 docs/GAME_RULES.md        the rules this server enforces
 docs/SNAPSHOTS.md         snapshot vs backup, checksum, restore sequence
+docs/WORLD_MAP.md         admin god-view map
+web/admin/                admin control center, including the Map tab
 alembic/                  schema migrations
 docker-compose.yml        local Postgres + API + worker
 web/                      static client for GitHub Pages

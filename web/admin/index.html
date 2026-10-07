@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Admin Control Center — Simcore</title>
     <link rel="stylesheet" href="admin.css" />
+    <link rel="stylesheet" href="map.css" />
   </head>
   <body>
     <header class="top">
@@ -62,6 +63,7 @@
       <button type="button" data-nav="snapshots">Snapshots</button>
       <button type="button" data-nav="events">Events</button>
       <button type="button" data-nav="world">World</button>
+      <button type="button" data-nav="map">Map</button>
       <button type="button" data-nav="battles">Battles</button>
       <button type="button" data-nav="ledger">Ledger</button>
       <button type="button" data-nav="trace">Event trace</button>
@@ -160,6 +162,14 @@
         </form>
         <div id="world-list"></div>
         <div id="world-detail"></div>
+      </section>
+
+      <section data-view="map" class="panel" hidden>
+        <div class="panel-head">
+          <h2>World map</h2>
+          <p class="muted">God view of every city, army, and in-progress movement. Positions come from <span class="mono">GET /v1/admin/world-map</span>. This tab sends no commands.</p>
+        </div>
+        <div id="map-root"></div>
       </section>
 
       <section data-view="battles" class="panel" hidden>
@@ -286,6 +296,7 @@
     </footer>
 
     <script src="../config.js"></script>
+    <script src="map.js"></script>
     <script src="admin.js"></script>
   </body>
 </html>
