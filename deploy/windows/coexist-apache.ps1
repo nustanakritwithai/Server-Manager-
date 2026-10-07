@@ -161,13 +161,13 @@ try {
     $utf8 = New-Object System.Text.UTF8Encoding $false
     [System.IO.File]::WriteAllText($tempCaddy, $caddyText, $utf8)
     Write-Host "Validating the Caddyfile"
-    $validate = & $caddy validate --config ($tempCaddy -replace '\\', '/') 2>&1 | Out-String
-    $validateCode = $LASTEXITCODE
+    $validate = Invoke-SimcoreNative -FilePath $caddy -ArgumentList @("validate", "--config", ($tempCaddy -replace '\\', '/'))
     Remove-Item -LiteralPath $tempCaddy -Force -ErrorAction SilentlyContinue
-    if ($validateCode -ne 0) {
-        throw "caddy validate failed.`n$validate"
+    $validateOk = ($validate.ExitCode -eq 0) -or ($validate.Output -match 'Valid configuration')
+    if (-not $validateOk) {
+        throw "caddy validate failed.`n$($validate.Output)"
     }
-    Write-Host ($validate.Trim())
+    if ($validate.Output) { Write-Host $validate.Output }
 
     $phase = "publish"
     $acme = Disable-CompetingAcmeClients

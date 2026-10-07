@@ -753,19 +753,80 @@ function Find-ApacheInstall {
     }
 }
 
+function Test-ApacheConfigOk {
+    param($ExitCode, [string]$Output)
+    if ($ExitCode -eq 0) { return $true }
+    if ($Output -and $Output.Contains("Syntax OK")) { return $true }
+    return $false
+}
+
+function Convert-SimcoreNativeText {
+    param($Value)
+    if ($null -eq $Value) { return "" }
+    $parts = New-Object System.Collections.Generic.List[string]
+    foreach ($item in @($Value)) {
+        if ($null -eq $item) { continue }
+        $parts.Add(([string]$item).TrimEnd())
+    }
+    return (($parts.ToArray()) -join "`n").Trim()
+}
+
+function Invoke-SimcoreNative {
+    param(
+        [string]$FilePath,
+        [string[]]$ArgumentList
+    )
+    if ([string]::IsNullOrWhiteSpace($FilePath)) { throw "Native command path is empty." }
+    if ($null -eq $ArgumentList) { $ArgumentList = @() }
+    # Windows PowerShell turns native stderr into a terminating NativeCommandError
+    # when ErrorActionPreference is Stop and stderr is merged with 2>&1.
+    # httpd -t writes "Syntax OK" to stderr.
+    $previous = $ErrorActionPreference
+    $hadNative = Test-Path variable:PSNativeCommandUseErrorActionPreference
+    $previousNative = $null
+    if ($hadNative) { $previousNative = $PSNativeCommandUseErrorActionPreference }
+    $ErrorActionPreference = "Continue"
+    if ($hadNative) { $PSNativeCommandUseErrorActionPreference = $false }
+    try {
+        $raw = & $FilePath @ArgumentList 2>&1
+        $code = $LASTEXITCODE
+        return [pscustomobject]@{
+            ExitCode = $code
+            Output = (Convert-SimcoreNativeText $raw)
+        }
+    } catch {
+        $message = ""
+        if ($_.Exception) { $message = [string]$_.Exception.Message }
+        $id = [string]$_.FullyQualifiedErrorId
+        if ($id -match 'NativeCommandError' -or $message.Contains("Syntax OK")) {
+            return [pscustomobject]@{
+                ExitCode = $LASTEXITCODE
+                Output = (Convert-SimcoreNativeText $message)
+            }
+        }
+        throw
+    } finally {
+        $ErrorActionPreference = $previous
+        if ($hadNative) { $PSNativeCommandUseErrorActionPreference = $previousNative }
+    }
+}
+
 function Invoke-ApacheConfigTest {
     param($Apache)
-    $output = & $Apache.Executable -t -d $Apache.ServerRoot 2>&1 | Out-String
-    if ($LASTEXITCODE -ne 0) {
-        throw "httpd -t failed, so Apache was not restarted.`n$output"
+    if ($null -eq $Apache -or [string]::IsNullOrWhiteSpace([string]$Apache.Executable)) {
+        throw "Apache executable was not found."
     }
-    Write-Host ($output.Trim())
+    $result = Invoke-SimcoreNative -FilePath $Apache.Executable -ArgumentList @("-t", "-d", [string]$Apache.ServerRoot)
+    if (-not (Test-ApacheConfigOk -ExitCode $result.ExitCode -Output $result.Output)) {
+        throw "httpd -t failed, so Apache was not restarted.`n$($result.Output)"
+    }
+    if ($result.Output) { Write-Host $result.Output }
 }
 
 function Restart-ApacheServer {
     param($Apache)
     Write-Host "Restarting Apache so it binds localhost only"
-    & $Apache.Executable -k stop -d $Apache.ServerRoot 2>&1 | Out-Null
+    Invoke-SimcoreNative -FilePath $Apache.Executable -ArgumentList @("-k", "stop", "-d", [string]$Apache.ServerRoot) | Out-Null
     Start-Sleep -Seconds 2
     if ($Apache.ServiceName) {
         Set-Service -Name $Apache.ServiceName -StartupType Automatic
