@@ -105,6 +105,52 @@ Assert-Equal "preset db" $preset["SIMCORE_DB_PASSWORD"] "keep-db"
 Assert-Equal "preset admin" $preset["SIMCORE_ADMIN_TOKEN"] "keep-admin"
 Assert-Equal "preset url" $preset["SIMCORE_DATABASE_URL"] "postgresql+psycopg://simcore:keep-db@127.0.0.1:5432/simcore"
 Remove-Item -LiteralPath $root -Recurse -Force
+Assert-Throws "null env map" {
+    Write-SimcoreEnv -Path (Join-Path ([System.IO.Path]::GetTempPath()) "simcore-null.env") -Map $null
+} "env map is null"
+
+function Get-NoPsqlRows { }
+$castRole = [string](Get-NoPsqlRows)
+Assert-True "empty psql cast stays null" ($null -eq $castRole)
+$emptyRole = Convert-SimcoreCommandText $castRole
+Assert-Equal "empty psql role" $emptyRole ""
+Assert-True "empty psql role is absent" ($emptyRole -ne "1")
+$emptyDb = Convert-SimcoreCommandText (Get-NoPsqlRows)
+Assert-True "empty psql database is absent" ([string]::IsNullOrWhiteSpace($emptyDb) -or $emptyDb -notmatch "1")
+Assert-Equal "psql role row" (Convert-SimcoreCommandText " 1 `r") "1"
+Assert-True "psql database row" ((Convert-SimcoreCommandText "1") -match "1")
+Assert-True "null firewall filter is not port 5432" (-not (Test-SimcoreFirewallMatchesPort -Filter $null -Port 5432))
+Assert-True "null firewall port is not 5432" (-not (Test-SimcoreFirewallMatchesPort -Filter ([pscustomobject]@{ LocalPort = $null }) -Port 5432))
+Assert-True "firewall port 5432 matches" (Test-SimcoreFirewallMatchesPort -Filter ([pscustomobject]@{ LocalPort = 5432 }) -Port 5432)
+Assert-SimcoreServiceSpec @{
+    Id = "simcore-api"
+    Name = "Simcore API"
+    Description = "api"
+    Executable = "python.exe"
+    Arguments = "-m simcore"
+}
+Assert-Throws "null service spec" { Assert-SimcoreServiceSpec $null } "empty"
+Assert-Throws "service spec missing id" {
+    Assert-SimcoreServiceSpec @{ Name = "Simcore API"; Description = "api"; Executable = "python.exe"; Arguments = "-m simcore" }
+} "Id"
+Assert-Throws "missing service executable" {
+    Assert-SimcoreServiceExecutable -Path (Join-Path ([System.IO.Path]::GetTempPath()) ("missing-python-" + [guid]::NewGuid().ToString("N") + ".exe")) -Name "Python virtualenv"
+} "Python virtualenv"
+
+$cache = Join-Path ([System.IO.Path]::GetTempPath()) ("simcore-cache-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $cache | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $cache "postgresql-16.exe.partial"), "x")
+[System.IO.File]::WriteAllText((Join-Path $cache "python-3.12.10-amd64.exe"), "x")
+[System.IO.File]::WriteAllText((Join-Path $cache "caddy_2.11.7.zip"), "x")
+[System.IO.File]::WriteAllText((Join-Path $cache "WinSW.NET4.exe"), "x")
+[System.IO.File]::WriteAllText((Join-Path $cache "keep.txt"), "keep")
+Clear-SimcoreInstallerCache -TempRoot $cache
+Assert-True "installer cache removed" (-not (Test-Path -LiteralPath (Join-Path $cache "postgresql-16.exe.partial")))
+Assert-True "python installer removed" (-not (Test-Path -LiteralPath (Join-Path $cache "python-3.12.10-amd64.exe")))
+Assert-True "caddy cache removed" (-not (Test-Path -LiteralPath (Join-Path $cache "caddy_2.11.7.zip")))
+Assert-True "winsw cache removed" (-not (Test-Path -LiteralPath (Join-Path $cache "WinSW.NET4.exe")))
+Assert-True "unrelated temp file kept" (Test-Path -LiteralPath (Join-Path $cache "keep.txt"))
+Remove-Item -LiteralPath $cache -Recurse -Force
 
 Assert-True "download exact" (Test-SimcoreDownloadComplete -ActualBytes 404741880 -ExpectedBytes 404741880 -MinimumBytes 314572800)
 Assert-True "download short of declared" (-not (Test-SimcoreDownloadComplete -ActualBytes 1000 -ExpectedBytes 404741880 -MinimumBytes 1))
