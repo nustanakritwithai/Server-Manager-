@@ -913,11 +913,17 @@ function New-SimcoreProductionEnv {
     return $completed.Map
 }
 
+function Format-SimcoreGigabytes {
+    param([long]$Bytes)
+    $gb = $Bytes / 1GB
+    return $gb.ToString("0.00", [System.Globalization.CultureInfo]::InvariantCulture)
+}
+
 function Format-SimcoreLowDiskMessage {
     param([string]$Root, [long]$AvailableBytes, [long]$MinimumBytes)
-    $freeText = "{0:N2}" -f ($AvailableBytes / 1GB)
-    $needText = "{0:N0}" -f ($MinimumBytes / 1GB)
-    return "Not enough free space on $Root. Bootstrap needs about $needText GB free on this drive. This drive has $freeText GB free. Free space, then run bootstrap again."
+    $freeGb = Format-SimcoreGigabytes $AvailableBytes
+    $requiredGb = Format-SimcoreGigabytes $MinimumBytes
+    return "Not enough free space on $Root. FreeGB=$freeGb RequiredGB=$requiredGb. Free space, then run bootstrap again."
 }
 
 function Test-SimcoreDiskBudget {
@@ -938,7 +944,7 @@ function Get-SimcoreDriveFreeSpace {
 function Assert-SimcoreFreeDisk {
     param(
         [string]$Path,
-        [long]$MinimumBytes = 3GB
+        [long]$MinimumBytes = 1288490189
     )
     $drive = Get-SimcoreDriveFreeSpace $Path
     if (-not (Test-SimcoreDiskBudget -AvailableBytes $drive.AvailableBytes -MinimumBytes $MinimumBytes)) {
