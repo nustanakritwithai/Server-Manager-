@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from simcore import __version__
+from simcore.admin_auth import AdminSessionBook, LoginRateLimiter
 from simcore.api.admin import router as admin_router
 from simcore.api.routes import router
 from simcore.clock import Clock, SystemClock
@@ -67,6 +68,11 @@ def create_app(settings: Settings | None = None, base_clock: Clock | None = None
     )
     app.state.settings = settings
     app.state.base_clock = resolved_clock
+    app.state.admin_sessions = AdminSessionBook()
+    app.state.login_limiter = LoginRateLimiter(
+        max_failures=settings.admin_login_max_failures,
+        window_seconds=settings.admin_login_window_seconds,
+    )
 
     app.add_middleware(
         CORSMiddleware,

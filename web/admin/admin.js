@@ -1,11 +1,13 @@
 (() => {
   const STORAGE_URL = "simcore.apiBaseUrl";
   const STORAGE_TOKEN = "simcore.adminToken";
+  const STORAGE_SESSION = "simcore.adminSession";
   const REQUEST_MS = 25000;
 
   const state = {
     apiBaseUrl: "",
     token: "",
+    sessionToken: "",
     view: "dashboard",
     worldTab: "players",
     selectedSnapshotId: null,
@@ -48,6 +50,47 @@
     } catch {
       return false;
     }
+  }
+
+  function savedSession() {
+    try {
+      return localStorage.getItem(STORAGE_SESSION) || "";
+    } catch {
+      return "";
+    }
+  }
+
+  function persistSession(sessionValue) {
+    const stay = $("stay-signed-in").checked;
+    try {
+      if (sessionValue && stay) localStorage.setItem(STORAGE_SESSION, sessionValue);
+      else localStorage.removeItem(STORAGE_SESSION);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function signedIn() {
+    return Boolean(state.sessionToken || state.token);
+  }
+
+  function sessionExpiryText(token) {
+    const parts = String(token || "").split(".");
+    if (parts.length !== 3 || parts[0] !== "simadm1") return "";
+    try {
+      const padded = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+      const extra = padded.length % 4 === 0 ? "" : "=".repeat(4 - (padded.length % 4));
+      const payload = JSON.parse(atob(padded + extra));
+      if (!payload || !payload.exp) return "";
+      return "Session expires " + new Date(payload.exp * 1000).toLocaleString();
+    } catch {
+      return "";
+    }
+  }
+
+  function showExpiry(token) {
+    $("session-expiry").textContent = sessionExpiryText(token);
   }
 
   function h(tag, props) {
@@ -172,8 +215,9 @@
     if (opts.json !== undefined) headers.set("Content-Type", "application/json");
     if (opts.admin !== false) {
       const token = normalizeAdminToken(state.token);
-      if (!token) throw new Error("Enter the admin token for this session");
-      headers.set("X-Admin-Token", token);
+      if (state.sessionToken) headers.set("Authorization", "Bearer " + state.sessionToken);
+      if (token) headers.set("X-Admin-Token", token);
+      if (!state.sessionToken && !token) throw new Error("Sign in with the admin password or enter the admin token");
     }
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), REQUEST_MS);
@@ -248,10 +292,10 @@
       stat("API /health", health.api),
       stat("DB /health/ready", health.db)
     );
-    if (!state.token) {
+    if (!signedIn()) {
       $("dash-counts").replaceChildren(stat("Players", "UNKNOWN"), stat("Cities", "UNKNOWN"), stat("Armies", "UNKNOWN"), stat("Active movements", "UNKNOWN"));
       $("dash-events").replaceChildren(stat("Events", "UNKNOWN"));
-      $("dash-world").replaceChildren(h("p", { class: "muted", text: "Connect with an admin token to load world counts." }));
+      $("dash-world").replaceChildren(h("p", { class: "muted", text: "Sign in to load world counts." }));
       $("dash-snapshot").replaceChildren(stat("Latest snapshot", "UNKNOWN"));
       $("dash-gaps").replaceChildren(
         stat("Worker heartbeat", "UNKNOWN"),
@@ -809,7 +853,7 @@
     try {
       if (parsed.view === "dashboard") await loadDashboard(gen);
       else if (parsed.view === "actions") return;
-      else if (!state.token) throw new Error("Enter the admin token for this session");
+      else if (!signedIn()) throw new Error("Sign in with the admin password or enter the admin token");
       else if (parsed.view === "snapshots") {
         await loadSnapshots();
         if (gen !== generation) return;
@@ -843,6 +887,57 @@
     route();
   }
 
+  async function signIn(event) {
+    event.preventDefault();
+    state.apiBaseUrl = $("api-url").value.trim().replace(/\/+$/, "");
+    const password = $("admin-password").value;
+    $("admin-password").value = "";
+    if (state.apiBaseUrl) localStorage.setItem(STORAGE_URL, state.apiBaseUrl);
+    clearError();
+    try {
+      const body = await request("/v1/admin/login", { method: "POST", json: { password: password }, admin: false });
+      state.sessionToken = body && body.token ? String(body.token) : "";
+      const stored = persistSession(state.sessionToken);
+      const stay = $("stay-signed-in").checked;
+      const message = !state.sessionToken
+        ? "Sign-in did not return a session."
+        : stay
+          ? stored
+            ? "Signed in. The session token is saved on this device until it expires."
+            : "Signed in for this page, but browser storage is unavailable."
+          : "Signed in for this tab only. The session token was not saved.";
+      setSessionStatus(message, state.sessionToken ? "ok" : "");
+      showExpiry(state.sessionToken);
+      route();
+    } catch (error) {
+      setSessionStatus(error && error.message ? error.message : "Sign-in failed", "bad");
+      showExpiry("");
+    }
+  }
+
+  async function logOut() {
+    const hadSession = Boolean(state.sessionToken);
+    clearError();
+    try {
+      if (hadSession && state.apiBaseUrl) {
+        await request("/v1/admin/logout", { method: "POST" });
+      }
+    } catch (error) {
+      showError(error);
+    }
+    state.sessionToken = "";
+    persistSession("");
+    showExpiry("");
+    setSessionStatus(state.token ? "Session cleared. The advanced admin token is still loaded." : "Signed out.", "");
+    route();
+  }
+
+  $("admin-login-form").addEventListener("submit", (event) => {
+    signIn(event).catch(showError);
+  });
+  $("logout-btn").addEventListener("click", () => {
+    logOut().catch(showError);
+  });
   $("session-form").addEventListener("submit", connect);
   $("lock-btn").addEventListener("click", () => {
     state.token = "";
@@ -926,11 +1021,19 @@
   window.addEventListener("hashchange", () => route());
   state.apiBaseUrl = savedUrl() || defaultApi();
   state.token = savedToken();
+  state.sessionToken = savedSession();
   $("api-url").value = state.apiBaseUrl;
   $("remember-token").checked = Boolean(state.token);
-  setSessionStatus(
-    state.token ? "Saved token loaded from this device." : "Token is not loaded.",
-    state.token ? "ok" : "",
-  );
+  if (state.sessionToken) $("stay-signed-in").checked = true;
+  if (state.sessionToken) {
+    setSessionStatus("Signed in from this device.", "ok");
+    showExpiry(state.sessionToken);
+  } else {
+    setSessionStatus(
+      state.token ? "Saved token loaded from this device." : "Not signed in.",
+      state.token ? "ok" : "",
+    );
+    showExpiry("");
+  }
   route();
 })();

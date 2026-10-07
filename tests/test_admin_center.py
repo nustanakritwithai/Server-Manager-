@@ -69,6 +69,22 @@ def test_admin_pages_store_the_token_only_when_remembered() -> None:
     assert 'type="checkbox"' in remember
     assert re.search(r"\bchecked\b", remember) is None
     assert "Remember token on this device" in html
+    stay = _input_tag(html, "stay-signed-in")
+    assert 'type="checkbox"' in stay
+    assert re.search(r"\bchecked\b", stay) is not None
+    password = _input_tag(html, "admin-password")
+    assert 'type="password"' in password
+    assert 'autocomplete="current-password"' in password
+    assert "value=" not in password
+    username = _input_tag(html, "admin-username")
+    assert 'autocomplete="username"' in username
+    assert 'value="admin"' in username
+    advanced = re.search(r'<details\b[^>]*\bid="token-advanced"[^>]*>', html)
+    assert advanced is not None
+    assert re.search(r"\bopen\b", advanced.group(0)) is None
+    assert 'const STORAGE_SESSION = "simcore.adminSession"' in js
+    assert "/v1/admin/login" in js
+    assert "/v1/admin/logout" in js
 
     assert 'const STORAGE_TOKEN = "simcore.adminToken"' in js
     assert "simcore.apiBaseUrl" in js
@@ -76,8 +92,14 @@ def test_admin_pages_store_the_token_only_when_remembered() -> None:
     assert re.search(r'state\.token\s*=\s*"[^"]+"', js) is None
     assert re.search(r"state\.token\s*=\s*'[^']+'", js) is None
     writes = re.findall(r"localStorage\.setItem\(([^)]*)\)", js)
-    assert set(writes) == {"STORAGE_URL, state.apiBaseUrl", "STORAGE_TOKEN, clean"}
+    assert set(writes) == {
+        "STORAGE_URL, state.apiBaseUrl",
+        "STORAGE_TOKEN, clean",
+        "STORAGE_SESSION, sessionValue",
+    }
     assert "if (clean) localStorage.setItem(STORAGE_TOKEN, clean);" in js
+    assert "if (sessionValue && stay) localStorage.setItem(STORAGE_SESSION, sessionValue);" in js
+    assert all("password" not in write.lower() for write in writes)
     assert 'const remember = $("remember-token").checked;' in js
     assert re.findall(r"(?<!function )persistToken\(([^)]*)\)", js) == [
         'remember ? state.token : ""',

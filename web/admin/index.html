@@ -16,27 +16,45 @@
     </header>
 
     <section class="panel session">
-      <form id="session-form" class="stack">
+      <form id="admin-login-form" class="stack">
+        <label class="grow">
+          <span class="label">API base URL</span>
+          <input id="api-url" type="url" autocomplete="off" spellcheck="false" required />
+        </label>
+        <label class="grow">
+          <span class="label">Username</span>
+          <input id="admin-username" name="username" type="text" autocomplete="username" value="admin" autocapitalize="off" autocorrect="off" spellcheck="false" />
+        </label>
+        <label class="grow">
+          <span class="label">Admin password</span>
+          <input id="admin-password" name="password" type="password" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" />
+        </label>
+        <label class="check"><input id="stay-signed-in" type="checkbox" checked /><span>Stay signed in on this device</span></label>
+        <p class="muted">Stay signed in saves an expiring session token in this browser. It does not save the password. GitHub Pages storage is shared by every site on https://nustanakritwithai.github.io, so leave this on only for a trusted personal device. Uncheck it to keep the session in memory for this tab only. The server removes surrounding spaces and hidden characters from a pasted password.</p>
         <div class="row">
-          <label class="grow">
-            <span class="label">API base URL</span>
-            <input id="api-url" type="url" autocomplete="off" spellcheck="false" required />
-          </label>
-          <label class="grow">
-            <span class="label">X-Admin-Token</span>
-            <input id="admin-token" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="text" />
-          </label>
-        </div>
-        <label class="check"><input id="remember-token" type="checkbox" /><span>Remember token on this device</span></label>
-        <p class="muted">The box starts unchecked. Connect keeps the token in memory for this tab unless Remember token on this device is checked; then Connect saves it in this browser profile and later visits load it. Clear token removes it. Anything else served from this page’s origin can read a saved token. Pasted tokens drop surrounding spaces, line breaks, non-breaking spaces, and zero-width characters. The token is not written to session storage, cookies, the URL, or the console. The API still checks the header.</p>
-        <div class="row">
-          <button type="submit">Connect</button>
-          <button type="button" id="lock-btn" class="ghost">Clear token</button>
+          <button type="submit">Sign in</button>
+          <button type="button" id="logout-btn" class="ghost">Log out</button>
           <button type="button" id="api-reset" class="ghost">Default API URL</button>
           <button type="button" id="refresh-btn" class="ghost">Refresh view</button>
         </div>
       </form>
-      <p id="session-status" class="status">Token is not loaded.</p>
+      <p id="session-status" class="status">Not signed in.</p>
+      <p id="session-expiry" class="muted"></p>
+      <details id="token-advanced" class="advanced">
+        <summary>Advanced: X-Admin-Token</summary>
+        <form id="session-form" class="stack">
+          <label class="grow">
+            <span class="label">X-Admin-Token</span>
+            <input id="admin-token" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="text" />
+          </label>
+          <label class="check"><input id="remember-token" type="checkbox" /><span>Remember token on this device</span></label>
+          <p class="muted">The box starts unchecked. Connect keeps the token in memory for this tab unless Remember token on this device is checked; then Connect saves it in this browser profile and later visits load it. Clear token removes it. Anything else served from this page’s origin can read a saved token. Pasted tokens drop surrounding spaces, line breaks, non-breaking spaces, and zero-width characters. The token is not written to session storage, cookies, the URL, or the console. The API still checks the header.</p>
+          <div class="row">
+            <button type="submit">Connect</button>
+            <button type="button" id="lock-btn" class="ghost">Clear token</button>
+          </div>
+        </form>
+      </details>
     </section>
 
     <nav class="nav" aria-label="Admin sections">
