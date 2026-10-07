@@ -103,11 +103,16 @@ If the probe fails, queue, heartbeat, and game checks that need the database are
 | --- | --- |
 | `game.clock` | Game time (`base clock + world_state.offset_seconds`) and the offset |
 | `game.world_version` | `world_state.world_version`, including 0 |
-| `game.last_snapshot` | Latest `world_snapshots` row. UNKNOWN when the table has no row. WARN when that row is `CREATING`, `FAILED`, or `RESTORING` |
+| `game.last_snapshot` | Latest `world_snapshots` row. UNKNOWN when the table has no row. WARN when that row is `CREATING`, `FAILED`, or `RESTORING`. A world snapshot is not a database backup |
+| `backup.last_success` | Age of `last_verified_at` in the status file written by `deploy/windows/backup.ps1` after a dump is verified off-site. Default file on Windows: `C:\simcore\backups\backup-status.json`. WARN when the age is greater than 26 hours, CRITICAL when it is greater than 50 hours. UNKNOWN when the file is missing, unreadable, or has never recorded a verified upload. UNKNOWN does not by itself change overall status |
+
+### Host
+
+`host.cpu` is `psutil.cpu_percent` over a 0.1 second blocking sample, so the first reading is a real measurement and not the 0.0 that a non-blocking call returns. `host.memory` is `psutil.virtual_memory().percent`. Both are percents, higher is worse. Defaults are CPU warn 90 / critical 98 and memory warn 85 / critical 95, so a saturated sample can be CRITICAL. Override them with `SIMCORE_MONITOR_CPU_WARN_PERCENT`, `SIMCORE_MONITOR_CPU_CRITICAL_PERCENT`, `SIMCORE_MONITOR_MEMORY_WARN_PERCENT`, and `SIMCORE_MONITOR_MEMORY_CRITICAL_PERCENT`. A sample at or above the critical setting is CRITICAL. If psutil raises or the number is not finite, the status is UNKNOWN, the value is null, and nothing is invented. The reading is cached for about a second so the dashboard and the monitoring report share it.
 
 ### Not measured
 
-`host.cpu` is `psutil.cpu_percent` over a 0.1 second blocking sample, so the first reading is a real measurement and not the 0.0 that a non-blocking call returns. `host.memory` is `psutil.virtual_memory().percent`. Both are percents, higher is worse. Defaults are CPU warn 90 / critical 98 and memory warn 85 / critical 95, so a saturated sample can be CRITICAL. Override them with `SIMCORE_MONITOR_CPU_WARN_PERCENT`, `SIMCORE_MONITOR_CPU_CRITICAL_PERCENT`, `SIMCORE_MONITOR_MEMORY_WARN_PERCENT`, and `SIMCORE_MONITOR_MEMORY_CRITICAL_PERCENT`. A sample at or above the critical setting is CRITICAL. If psutil raises or the number is not finite, the status is UNKNOWN, the value is null, and nothing is invented. The reading is cached for about a second so the dashboard and the monitoring report share it. `build.commit` is NOT INSTRUMENTED when `SIMCORE_GIT_COMMIT` is unset and `git rev-parse HEAD` does not return a SHA. The package version is still reported.
+`build.commit` is NOT INSTRUMENTED when `SIMCORE_GIT_COMMIT` is unset and `git rev-parse HEAD` does not return a SHA. The package version is still reported.
 
 ## History and retention
 
@@ -162,6 +167,12 @@ All of these are optional. Unset means the default. For every pair except disk f
 | `SIMCORE_MONITOR_DB_SIZE_CRITICAL_MB` | 40960 | database size |
 | `SIMCORE_MONITOR_DISK_FREE_WARN_MB` | 5120 | free bytes |
 | `SIMCORE_MONITOR_DISK_FREE_CRITICAL_MB` | 2048 | free bytes |
+| `SIMCORE_MONITOR_CPU_WARN_PERCENT` | 90 | host CPU percent |
+| `SIMCORE_MONITOR_CPU_CRITICAL_PERCENT` | 98 | host CPU percent |
+| `SIMCORE_MONITOR_MEMORY_WARN_PERCENT` | 85 | host memory percent |
+| `SIMCORE_MONITOR_MEMORY_CRITICAL_PERCENT` | 95 | host memory percent |
+| `SIMCORE_BACKUP_WARN_HOURS` | 26 | age of last verified off-site backup |
+| `SIMCORE_BACKUP_CRITICAL_HOURS` | 50 | age of last verified off-site backup |
 
 A bad value (warn above critical, retention outside 1–30, sample interval other than 0 or 10–3600) stops the process at startup with a validation error. Nothing is invented in its place.
 
@@ -208,6 +219,15 @@ Free space at or below 5 GiB is WARN. At or below 2 GiB is CRITICAL. This host h
 1. Check `C:\simcore\logs` and old PostgreSQL logs.
 2. Monitoring retention is what keeps `monitoring_samples` from growing without a limit. Do not raise retention on a small disk without looking at free space.
 3. World snapshots are not deleted by monitoring. Pruning those is a separate operator decision; this page does not delete them.
+
+### WARN or CRITICAL on backup.last_success
+
+This is the age of the last dump that `deploy/windows/backup.ps1` verified on Google Drive. It is not `game.last_snapshot`.
+
+1. Read `C:\simcore\logs\backup.log`. The log does not contain the database password or the Drive token.
+2. A WARN above 26 hours means today's run did not finish a verified upload. A CRITICAL above 50 hours means more than one daily run was missed.
+3. UNKNOWN means the status file has never recorded a verified upload. Run the setup in [BACKUP_DR.md](BACKUP_DR.md), then run `deploy/windows/backup.ps1` once by hand.
+4. The C: drive is small. If the log says the disk check refused the dump, free space before the next run. The script does not delete older local dumps to make room for a dump that has not been uploaded yet.
 
 ### NOT INSTRUMENTED
 

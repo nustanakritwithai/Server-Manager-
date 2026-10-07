@@ -164,6 +164,10 @@ Migration `0004_monitoring` only creates new tables and indexes. It does not rew
 
 On the VPS, back up `C:\simcore\app\.env.prod`, then run `deploy/windows/update.ps1`. That script runs `alembic upgrade head` and restarts `simcore-api` and `simcore-worker`. The worker heartbeat starts when `simcore-worker` is running again.
 
+## Database backup
+
+A world snapshot is not a database backup. `deploy/windows/backup.ps1` runs `pg_dump -Fc` against localhost while the game stays up, writes a checksum and a manifest, and uploads them with rclone to the owner's Google Drive. The Monitoring tab shows `backup.last_success` from `C:\simcore\backups\backup-status.json`. There is no new migration and no new required environment variable. Setup, the disk-space limit, restore, and the drill are in [docs/BACKUP_DR.md](docs/BACKUP_DR.md).
+
 ## Run without Docker
 
 Postgres must already be running. Settings come from the environment (`SIMCORE_` prefix). Copy the template and edit it if you are not using the defaults:
@@ -401,16 +405,18 @@ src/simcore/
   game/queue.py           SKIP LOCKED claim
   game/ledger.py          transactions + idempotency keys
   snapshot.py             world capture, checksum, safe restore
+  backup.py               backup status, retention, restore-drill checks
   monitoring.py           measured health checks, heartbeats, samples
   world.py                world_version and maintenance gates
 docs/GAME_RULES.md        the rules this server enforces
 docs/SNAPSHOTS.md         snapshot vs backup, checksum, restore sequence
+docs/BACKUP_DR.md         pg_dump, Google Drive, restore, drill
 docs/WORLD_MAP.md         admin god-view map
 web/admin/                admin control center, including the Map and Monitoring tabs
 alembic/                  schema migrations
 docker-compose.yml        local Postgres + API + worker
 web/                      static client for GitHub Pages
-deploy/windows/           VPS bootstrap, Apache coexistence, update, and Caddy example
+deploy/windows/           VPS bootstrap, Apache coexistence, update, backup, and Caddy example
 .github/workflows/        Pages deploy and the self-hosted Windows update
 ```
 
@@ -421,7 +427,7 @@ deploy/windows/           VPS bootstrap, Apache coexistence, update, and Caddy e
 ## Left for later
 
 - Real authentication and sessions
-- Disaster-recovery backups (`pg_dump` / point-in-time recovery). Snapshots roll the simulation back; they are not a substitute. See [docs/SNAPSHOTS.md](docs/SNAPSHOTS.md).
+- Point-in-time recovery (WAL archiving). Daily `pg_dump` to Google Drive is in [docs/BACKUP_DR.md](docs/BACKUP_DR.md). Snapshots still only roll the simulation back.
 - Admin UI for snapshots (Phase 3). The HTTP API is in place; there is no `/admin` page yet.
 - A full dead-letter workflow for failed events (this MVP marks an event `failed` after 5 attempts so one poison row cannot block the queue)
 - Rate limiting

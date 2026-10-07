@@ -9,7 +9,7 @@ A snapshot freezes the simulation so it can be inspected or restored. Use it for
 | What it is | A checksummed copy of the game world inside PostgreSQL | A dump of the database (for example `pg_dump`) or disk-level / point-in-time recovery |
 | What it covers | Players, cities, armies, movements, events, battle reports, the resource ledger, and the simulation clock (`offset_seconds`, `world_version`) | The whole database: roles, catalogs, every table, and anything else stored in Postgres |
 | What it is for | Debug, replay, test, undo a bad stretch of play | Disaster recovery: lost disk, dropped database, corrupted cluster |
-| What this repo does | `world_snapshots` + `world_snapshot_payloads`, admin HTTP API | Nothing. Production still needs its own backups. |
+| What this repo does | `world_snapshots` + `world_snapshot_payloads`, admin HTTP API | `deploy/windows/backup.ps1` takes a `pg_dump -Fc` and uploads it to Google Drive. See [BACKUP_DR.md](BACKUP_DR.md). This is not point-in-time recovery. |
 
 Restoring a snapshot does not reload Postgres. It replaces the simulation rows in the existing database. Snapshot rows themselves are kept, including the safety copy taken just before a restore.
 
