@@ -10,6 +10,8 @@ os.environ["SIMCORE_DATABASE_URL"] = os.environ.get(
 )
 os.environ.setdefault("SIMCORE_ENV", "development")
 os.environ.setdefault("SIMCORE_ADMIN_TOKEN", "dev-admin")
+# The API sampler writes rows on a timer. Tests call sample_once themselves.
+os.environ["SIMCORE_MONITOR_API_SAMPLER"] = "false"
 
 from datetime import datetime, timezone
 
@@ -41,6 +43,10 @@ def truncate() -> None:
             text(
                 """
                 TRUNCATE TABLE
+                  monitoring_check_state,
+                  monitoring_samples,
+                  worker_process_marks,
+                  worker_heartbeats,
                   audit_log,
                   world_snapshot_payloads,
                   world_snapshots,

@@ -225,6 +225,61 @@ td.wrap, th.wrap { white-space: normal; }
 .verdict-not-checked .verdict-value,
 .verdict-unknown .verdict-value { color: var(--warn); }
 
+.check-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.check {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px;
+  background: var(--panel-2);
+}
+
+.check.ok { border-color: #1f6b2c; }
+.check.warn { border-color: #6b5420; }
+.check.bad { border-color: #8b2e2e; }
+
+.check-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.check-top h3 {
+  margin: 0;
+  font-size: 0.92rem;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text);
+}
+
+.check-value {
+  font-family: ui-monospace, Consolas, monospace;
+  margin: 6px 0;
+  word-break: break-word;
+}
+
+.chart-block { margin-top: 14px; }
+.chart-block h3 { margin-bottom: 4px; }
+
+.chart {
+  width: 100%;
+  height: auto;
+  background: #0b0e13;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: block;
+}
+
+.chart text { fill: var(--muted); font-size: 11px; font-family: ui-monospace, Consolas, monospace; }
+.chart .chart-line { fill: none; stroke: var(--accent); stroke-width: 2; }
+.chart .chart-dot { fill: var(--accent); }
+
 .reason-list { margin: 8px 0 0; padding-left: 18px; }
 .reason-list li { margin: 4px 0; }
 
@@ -258,5 +313,10 @@ details.advanced form { margin-top: 8px; }
   h1 { font-size: 1.25rem; }
   input, select, button { font-size: 16px; }
   .nav button { flex: 1 1 calc(50% - 6px); }
-  .timeline-step, .verdict-banner, .panel { overflow-wrap: anywhere; }
+  .timeline-step, .verdict-banner, .panel, .check { overflow-wrap: anywhere; }
+  .check-grid { grid-template-columns: 1fr; }
+}
+
+@media (min-width: 800px) {
+  .check-grid { grid-template-columns: 1fr 1fr; }
 }

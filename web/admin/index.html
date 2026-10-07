@@ -66,6 +66,7 @@
       <button type="button" data-nav="ledger">Ledger</button>
       <button type="button" data-nav="trace">Event trace</button>
       <button type="button" data-nav="audit">Audit log</button>
+      <button type="button" data-nav="monitoring">Monitoring</button>
       <button type="button" data-nav="actions">Actions</button>
     </nav>
 
@@ -75,7 +76,7 @@
       <section data-view="dashboard" class="panel">
         <div class="panel-head">
           <h2>Dashboard</h2>
-          <p class="muted">Health comes from <span class="mono">/health</span> and <span class="mono">/health/ready</span>. Counts come from <span class="mono">GET /v1/admin/dashboard</span>. Missing probes stay UNKNOWN or NOT INSTRUMENTED.</p>
+          <p class="muted">Liveness probes come from <span class="mono">/health</span> and <span class="mono">/health/ready</span>. Counts come from <span class="mono">GET /v1/admin/dashboard</span>. Measured queue, worker, disk, and API checks are on the Monitoring tab. CPU and memory stay NOT INSTRUMENTED.</p>
         </div>
         <div id="dash-health" class="stats"></div>
         <div id="dash-counts" class="stats"></div>
@@ -246,6 +247,32 @@
         </div>
       </section>
 
+      <section data-view="monitoring" class="panel" hidden>
+        <div class="panel-head">
+          <h2>Monitoring</h2>
+          <p class="muted">Every state, value, and reason is from <span class="mono">GET /v1/admin/monitoring</span>. Charts are stored samples from <span class="mono">GET /v1/admin/monitoring/history</span>. This page does not invent numbers, and it does not change the world.</p>
+        </div>
+        <div class="row">
+          <label class="check"><input id="monitor-auto" type="checkbox" checked /><span>Auto-refresh</span></label>
+          <label>
+            <span class="label">History window</span>
+            <select id="monitor-window">
+              <option value="15m">15m</option>
+              <option value="1h">1h</option>
+              <option value="6h">6h</option>
+              <option value="24h" selected>24h</option>
+              <option value="7d">7d</option>
+            </select>
+          </label>
+          <button type="button" id="monitor-refresh" class="ghost">Refresh now</button>
+        </div>
+        <p id="monitor-updated" class="muted"></p>
+        <div id="monitor-overall"></div>
+        <div id="monitor-note"></div>
+        <div id="monitor-checks" class="check-grid"></div>
+        <div id="monitor-charts"></div>
+      </section>
+
       <section data-view="actions" class="panel" hidden>
         <div class="panel-head">
           <h2>Admin actions</h2>
@@ -282,7 +309,7 @@
     </main>
 
     <footer class="foot">
-      <p>The browser displays state and sends admin commands. Snapshot restore, event processing, combat, the ledger, trace verdicts, and the audit chain stay on the server.</p>
+      <p>The browser displays state and sends admin commands. Snapshot restore, event processing, combat, the ledger, trace verdicts, the audit chain, and monitoring checks stay on the server.</p>
     </footer>
 
     <script src="../config.js"></script>

@@ -291,3 +291,75 @@ class WorldSnapshotPayload(Base):
         primary_key=True,
     )
     body: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class WorkerHeartbeat(Base):
+    """Latest tick of one worker process. Not part of the world snapshot.
+
+    One row per worker id (hostname and pid). The worker upserts it after each
+    tick, outside the event transaction. Monitoring reads it; nothing in combat,
+    the ledger, or the checksum does.
+    """
+
+    __tablename__ = "worker_heartbeats"
+
+    worker_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    pid: Mapped[int] = mapped_column(Integer, nullable=False)
+    hostname: Mapped[str] = mapped_column(String(80), nullable=False)
+    version: Mapped[str] = mapped_column(String(40), nullable=False)
+    commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_tick_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    tick_duration_ms: Mapped[float] = mapped_column(Float, nullable=False)
+    events_processed: Mapped[int] = mapped_column(Integer, nullable=False)
+    tick_status: Mapped[str] = mapped_column(String(20), nullable=False)
+    pool_checked_out: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pool_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pool_overflow: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pool_capacity: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class WorkerProcessMark(Base):
+    """Wall-clock record that the worker finished handling one event.
+
+    processed_at on events is game time (the event's due_at), so it cannot
+    answer "how many events did the worker finish this minute". This table is
+    that answer. event_id is not a foreign key: snapshot restore rewrites
+    events and must not wait on monitoring rows.
+    """
+
+    __tablename__ = "worker_process_marks"
+    __table_args__ = (Index("ix_worker_process_marks_wall_at", "wall_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    worker_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    event_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    outcome: Mapped[str] = mapped_column(String(20), nullable=False)
+    wall_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MonitoringSample(Base):
+    """One measured number at one time. Pruned by retention. Not in snapshots."""
+
+    __tablename__ = "monitoring_samples"
+    __table_args__ = (
+        Index("ix_monitoring_samples_sampled_at", "sampled_at"),
+        Index("ix_monitoring_samples_metric_sampled_at", "metric", "sampled_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sampled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    metric: Mapped[str] = mapped_column(String(64), nullable=False)
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+
+
+class MonitoringCheckState(Base):
+    """Last liveness the sampler published, so a transition is audited once."""
+
+    __tablename__ = "monitoring_check_state"
+
+    check_name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

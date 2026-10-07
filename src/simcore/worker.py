@@ -23,12 +23,14 @@ from simcore.constants import EventStatus
 from simcore.db import get_sessionmaker
 from simcore.game.queue import claim_one
 from simcore.game.processor import process_event
-from simcore.models import Event, WorldState
+from simcore.models import Event, WorldState, utcnow
+from simcore.monitoring import observe_tick, sample_once
 from simcore.world import WORKER_DRAIN_LOCK
 
 logger = logging.getLogger("simcore.worker")
 
 WORKER_ID = f"{socket.gethostname()}:{os.getpid()}"
+WORKER_STARTED_AT = utcnow()
 
 
 def run_once(base_clock: Clock | None = None) -> tuple[str, int | None]:
@@ -39,11 +41,16 @@ def run_once(base_clock: Clock | None = None) -> tuple[str, int | None]:
     The shared drain lock is held for this transaction. Snapshot restore takes
     the exclusive lock, so it waits for an in-flight event and then sees
     worker_paused. Two workers can still hold the shared lock together.
+
+    After the event transaction finishes, the worker writes a heartbeat. That
+    write is a separate transaction and cannot roll the world back.
     """
 
     base = base_clock or SystemClock()
+    started = time.perf_counter()
     session = get_sessionmaker()()
     event_id: int | None = None
+    status = "failed"
     try:
         with session.begin():
             session.execute(text("SELECT pg_advisory_xact_lock_shared(:key)"), {"key": WORKER_DRAIN_LOCK})
@@ -51,24 +58,43 @@ def run_once(base_clock: Clock | None = None) -> tuple[str, int | None]:
             if state is None:
                 raise RuntimeError("world_state row is missing; run migrations")
             if state.worker_paused:
-                return "paused", None
-            clock = OffsetClock(session, base)
-            event = claim_one(session, clock.now(), worker_id=WORKER_ID)
-            if event is None:
-                return "empty", None
-            event_id = event.id
-            # Resolve as of the scheduled instant so a late worker does not
-            # stretch travel or production past the ETA the client counted down.
-            process_event(session, event, event.due_at)
-        logger.info("processed event %s", event_id)
-        return "processed", event_id
+                status = "paused"
+            else:
+                clock = OffsetClock(session, base)
+                event = claim_one(session, clock.now(), worker_id=WORKER_ID)
+                if event is None:
+                    status = "empty"
+                else:
+                    event_id = event.id
+                    # Resolve as of the scheduled instant so a late worker does not
+                    # stretch travel or production past the ETA the client counted down.
+                    process_event(session, event, event.due_at)
+                    status = "processed"
+        if status == "processed":
+            logger.info("processed event %s", event_id)
     except Exception as exc:
         logger.exception("event %s failed", event_id)
+        status = "failed"
         if event_id is not None:
             _record_failure(event_id, exc, base)
-        return "failed", event_id
     finally:
         session.close()
+    _observe(status, event_id, started)
+    return status, event_id
+
+
+def _observe(status: str, event_id: int | None, started: float) -> None:
+    try:
+        observe_tick(
+            worker_id=WORKER_ID,
+            started_at=WORKER_STARTED_AT,
+            tick_status=status,
+            tick_duration_ms=(time.perf_counter() - started) * 1000.0,
+            events_processed=1 if status == "processed" else 0,
+            event_id=event_id,
+        )
+    except Exception:
+        logger.exception("worker heartbeat failed")
 
 
 def _record_failure(event_id: int, exc: BaseException, base: Clock) -> None:
@@ -109,9 +135,16 @@ def serve(
     settings = get_settings()
     interval = settings.worker_poll_seconds if poll_seconds is None else poll_seconds
     logger.info("worker %s polling every %.2fs", WORKER_ID, interval)
+    last_sample = time.monotonic()
     while stop_event is None or not stop_event.is_set():
         status, _event_id = run_once(base_clock)
-        if status == "empty":
+        if settings.monitor_sample_seconds > 0 and time.monotonic() - last_sample >= settings.monitor_sample_seconds:
+            try:
+                sample_once(base_clock=base_clock, include_api=False, settings=settings)
+            except Exception:
+                logger.exception("worker monitoring sample failed")
+            last_sample = time.monotonic()
+        if status in ("empty", "paused"):
             if stop_event is None:
                 time.sleep(interval)
             elif stop_event.wait(interval):

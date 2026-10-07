@@ -27,8 +27,8 @@ from simcore.models import (
 from simcore.present import army_body, city_body, report_body
 from simcore.snapshot import snapshot_metadata
 
-# The API does not record a worker heartbeat or host metrics. The dashboard
-# returns this token so the UI can show it instead of inventing a pass.
+# CPU and memory are still not measured. Heartbeat and disk are on
+# GET /v1/admin/monitoring. The dashboard keeps this token for the gaps.
 NOT_INSTRUMENTED = "NOT INSTRUMENTED"
 
 _EVENT_STATUSES = (
@@ -148,10 +148,8 @@ def dashboard(session: Session, *, now: datetime, offset_seconds: int) -> dict[s
         "events": event_counts,
         "latest_snapshot": None if latest is None else snapshot_metadata(latest),
         "uninstrumented": {
-            "worker_heartbeat": NOT_INSTRUMENTED,
             "host_cpu": NOT_INSTRUMENTED,
             "host_memory": NOT_INSTRUMENTED,
-            "host_disk": NOT_INSTRUMENTED,
         },
     }
 

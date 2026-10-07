@@ -34,6 +34,8 @@ READ_PATHS = (
     "/v1/admin/reports/1",
     "/v1/admin/transactions",
     "/v1/admin/snapshots",
+    "/v1/admin/monitoring",
+    "/v1/admin/monitoring/history",
 )
 
 
@@ -201,8 +203,10 @@ def test_dashboard_counts_and_event_filter(client, frozen) -> None:
     assert body["events"]["failed"] == 0
     assert body["events"]["cancelled"] == 0
     assert body["latest_snapshot"] is None
-    assert body["uninstrumented"]["worker_heartbeat"] == "NOT INSTRUMENTED"
     assert body["uninstrumented"]["host_cpu"] == "NOT INSTRUMENTED"
+    assert body["uninstrumented"]["host_memory"] == "NOT INSTRUMENTED"
+    assert "worker_heartbeat" not in body["uninstrumented"]
+    assert "host_disk" not in body["uninstrumented"]
     assert body["world"]["commands_open"] is True
     assert body["offset_seconds"] == 0
 

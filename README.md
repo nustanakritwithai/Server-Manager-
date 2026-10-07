@@ -93,6 +93,8 @@ Useful admin and CLI entry points:
 | Battle reports | `GET /v1/admin/reports` | |
 | Event trace | `GET /v1/admin/trace/{trace_id}`, `GET /v1/admin/trace` | |
 | Audit log | `GET /v1/admin/audit` | |
+| Monitoring | `GET /v1/admin/monitoring` | |
+| Monitoring history | `GET /v1/admin/monitoring/history?metric=&window=` | |
 
 Admin routes are on unless `SIMCORE_ENV=production`. In production set `SIMCORE_ENABLE_ADMIN=1` to turn them back on.
 
@@ -128,6 +130,18 @@ An accepted command gets a `trace_id`. That id is copied onto the movement, the 
 `GET /v1/admin/audit` is the append-only log of admin actions (login success and failure, logout, revoke-all, snapshot create, inspect, restore, clock advance, run-event, worker tick) plus a hash-chain check of the whole table. Passwords, session tokens, and password hashes are not stored. There is no update or delete route.
 
 The admin page has an Event trace view and an Audit log tab. They render the server JSON. Details are in [docs/AUDIT_TRACE.md](docs/AUDIT_TRACE.md). No new environment variable is required.
+
+## Monitoring
+
+`GET /v1/admin/monitoring` is a read-only picture of the process right now: event queue, worker heartbeat, API counters, database probe, disk free, and the game clock. Each check is `OK`, `WARN`, `CRITICAL`, `UNKNOWN`, or `NOT INSTRUMENTED`, with the measured value, the threshold, and a reason. `UNKNOWN` is not a pass. CPU and memory are `NOT INSTRUMENTED`. `GET /health` stays `{"status":"ok"}` and does not include these checks.
+
+The worker writes a heartbeat after every tick, in its own transaction, so a stalled or stopped worker shows up as `STALE` and then `DOWN` with the age of the last tick. `GET /v1/admin/monitoring/history?metric=&window=` returns samples kept for trends (default window `24h`). The worker loop and the API sampler write those samples about every 60 seconds and delete rows older than 7 days. API request counts and latency live in the API process and reset when that process restarts; the payload says so.
+
+The admin page Monitoring tab shows the same payload, with pausable auto-refresh and plain SVG charts. It does not compute health itself. Thresholds are optional `SIMCORE_MONITOR_*` variables with defaults in `.env.prod.example`. None of them are required. Worker liveness changes (`STALE`, `DOWN`, recovered) are appended to the audit log. Details are in [docs/MONITORING.md](docs/MONITORING.md).
+
+Migration `0004_monitoring` only creates new tables and indexes. It does not rewrite existing rows. Those tables are not part of the world snapshot, so snapshot checksums stay about the simulation only.
+
+On the VPS, back up `C:\simcore\app\.env.prod`, then run `deploy/windows/update.ps1`. That script runs `alembic upgrade head` and restarts `simcore-api` and `simcore-worker`. The worker heartbeat starts when `simcore-worker` is running again.
 
 ## Run without Docker
 
@@ -366,6 +380,7 @@ src/simcore/
   game/queue.py           SKIP LOCKED claim
   game/ledger.py          transactions + idempotency keys
   snapshot.py             world capture, checksum, safe restore
+  monitoring.py           measured health checks, heartbeats, samples
   world.py                world_version and maintenance gates
 docs/GAME_RULES.md        the rules this server enforces
 docs/SNAPSHOTS.md         snapshot vs backup, checksum, restore sequence
@@ -385,7 +400,6 @@ deploy/windows/           VPS bootstrap, Apache coexistence, update, and Caddy e
 - Real authentication and sessions
 - Disaster-recovery backups (`pg_dump` / point-in-time recovery). Snapshots roll the simulation back; they are not a substitute. See [docs/SNAPSHOTS.md](docs/SNAPSHOTS.md).
 - Admin UI for snapshots (Phase 3). The HTTP API is in place; there is no `/admin` page yet.
-- Monitoring and metrics
 - A full dead-letter workflow for failed events (this MVP marks an event `failed` after 5 attempts so one poison row cannot block the queue)
 - Rate limiting
 - Fog of war

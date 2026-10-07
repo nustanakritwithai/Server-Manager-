@@ -17,6 +17,7 @@ The document covers schema_version, world_state (id, offset_seconds,
 world_version), and every column of players, cities, armies, player_commands,
 movements, events, battle_reports, and transactions. Nullable trace_id columns
 are part of that document. It does not cover snapshot rows, the audit log,
+worker heartbeats, process marks, monitoring samples, monitoring check state,
 commands_open, or worker_paused. world_time on the snapshot row is metadata
 (the simulated clock at capture) and is not hashed; offset_seconds is the
 hashed clock state.

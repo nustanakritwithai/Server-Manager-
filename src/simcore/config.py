@@ -74,6 +74,47 @@ class Settings(BaseSettings):
     # When true, the API process also runs the worker loop. The standalone
     # worker remains the default, including on the Windows VPS.
     embedded_worker: bool = False
+    # Monitoring. Every value below is optional. Unset means the default.
+    # Sample interval 0 turns periodic samples off. Otherwise it is 10 to 3600 seconds.
+    monitor_sample_seconds: float = 60
+    monitor_retention_days: int = 7
+    # The API process also writes samples so API latency history exists while
+    # the API is up. Tests set this false. The worker loop samples either way.
+    monitor_api_sampler: bool = True
+    # Empty measures the drive of the process working directory (C:\ on the VPS
+    # when the app lives on C:, / in a Linux container). A missing path is
+    # reported NOT INSTRUMENTED, not as a healthy disk.
+    monitor_disk_path: str = ""
+    monitor_heartbeat_warn_seconds: float = 15
+    monitor_heartbeat_critical_seconds: float = 60
+    monitor_event_lag_warn_seconds: float = 15
+    monitor_event_lag_critical_seconds: float = 120
+    monitor_oldest_due_warn_seconds: float = 15
+    monitor_oldest_due_critical_seconds: float = 120
+    monitor_queue_pending_warn: int = 500
+    monitor_queue_pending_critical: int = 5000
+    monitor_queue_due_warn: int = 25
+    monitor_queue_due_critical: int = 200
+    monitor_failed_warn: int = 1
+    monitor_failed_critical: int = 10
+    monitor_retried_warn: int = 1
+    monitor_retried_critical: int = 20
+    monitor_processing_warn_seconds: float = 30
+    monitor_processing_critical_seconds: float = 120
+    monitor_api_error_rate_warn: float = 0.01
+    monitor_api_error_rate_critical: float = 0.05
+    monitor_api_5xx_warn: int = 1
+    monitor_api_5xx_critical: int = 10
+    monitor_api_p95_warn_ms: float = 300
+    monitor_api_p95_critical_ms: float = 1000
+    monitor_db_rtt_warn_ms: float = 50
+    monitor_db_rtt_critical_ms: float = 200
+    monitor_db_pool_warn: float = 0.8
+    monitor_db_pool_critical: float = 0.95
+    monitor_db_size_warn_mb: int = 10240
+    monitor_db_size_critical_mb: int = 40960
+    monitor_disk_free_warn_mb: int = 5120
+    monitor_disk_free_critical_mb: int = 2048
 
     @field_validator("database_url", mode="before")
     @classmethod
@@ -102,7 +143,58 @@ class Settings(BaseSettings):
             raise ValueError("SIMCORE_ADMIN_LOGIN_MAX_FAILURES must be at least 1")
         if self.admin_login_window_seconds < 1:
             raise ValueError("SIMCORE_ADMIN_LOGIN_WINDOW_SECONDS must be at least 1")
+        self._check_monitor()
         return self
+
+    def _check_monitor(self) -> None:
+        if self.monitor_sample_seconds < 0:
+            raise ValueError("SIMCORE_MONITOR_SAMPLE_SECONDS must be 0 (off) or at least 10")
+        if self.monitor_sample_seconds != 0 and not 10 <= self.monitor_sample_seconds <= 3600:
+            raise ValueError("SIMCORE_MONITOR_SAMPLE_SECONDS must be 0 (off) or between 10 and 3600")
+        if not 1 <= self.monitor_retention_days <= 30:
+            raise ValueError("SIMCORE_MONITOR_RETENTION_DAYS must be from 1 to 30")
+        self.monitor_disk_path = self.monitor_disk_path.strip()
+        pairs = (
+            ("SIMCORE_MONITOR_HEARTBEAT", self.monitor_heartbeat_warn_seconds, self.monitor_heartbeat_critical_seconds),
+            ("SIMCORE_MONITOR_EVENT_LAG", self.monitor_event_lag_warn_seconds, self.monitor_event_lag_critical_seconds),
+            ("SIMCORE_MONITOR_OLDEST_DUE", self.monitor_oldest_due_warn_seconds, self.monitor_oldest_due_critical_seconds),
+            ("SIMCORE_MONITOR_QUEUE_PENDING", self.monitor_queue_pending_warn, self.monitor_queue_pending_critical),
+            ("SIMCORE_MONITOR_QUEUE_DUE", self.monitor_queue_due_warn, self.monitor_queue_due_critical),
+            ("SIMCORE_MONITOR_FAILED", self.monitor_failed_warn, self.monitor_failed_critical),
+            ("SIMCORE_MONITOR_RETRIED", self.monitor_retried_warn, self.monitor_retried_critical),
+            ("SIMCORE_MONITOR_PROCESSING", self.monitor_processing_warn_seconds, self.monitor_processing_critical_seconds),
+            ("SIMCORE_MONITOR_API_ERROR_RATE", self.monitor_api_error_rate_warn, self.monitor_api_error_rate_critical),
+            ("SIMCORE_MONITOR_API_5XX", self.monitor_api_5xx_warn, self.monitor_api_5xx_critical),
+            ("SIMCORE_MONITOR_API_P95", self.monitor_api_p95_warn_ms, self.monitor_api_p95_critical_ms),
+            ("SIMCORE_MONITOR_DB_RTT", self.monitor_db_rtt_warn_ms, self.monitor_db_rtt_critical_ms),
+            ("SIMCORE_MONITOR_DB_POOL", self.monitor_db_pool_warn, self.monitor_db_pool_critical),
+            ("SIMCORE_MONITOR_DB_SIZE_MB", self.monitor_db_size_warn_mb, self.monitor_db_size_critical_mb),
+        )
+        for name, warn, critical in pairs:
+            if warn < 0 or critical < 0:
+                raise ValueError(f"{name} warn and critical must be zero or greater")
+            if warn >= critical:
+                raise ValueError(f"{name} warn must be below critical")
+        if self.monitor_disk_free_warn_mb <= 0 or self.monitor_disk_free_critical_mb <= 0:
+            raise ValueError("SIMCORE_MONITOR_DISK_FREE warn and critical must be greater than zero")
+        if self.monitor_disk_free_warn_mb <= self.monitor_disk_free_critical_mb:
+            raise ValueError("SIMCORE_MONITOR_DISK_FREE_WARN_MB must be above SIMCORE_MONITOR_DISK_FREE_CRITICAL_MB")
+
+    @property
+    def monitor_disk_free_warn_bytes(self) -> int:
+        return self.monitor_disk_free_warn_mb * 1024 * 1024
+
+    @property
+    def monitor_disk_free_critical_bytes(self) -> int:
+        return self.monitor_disk_free_critical_mb * 1024 * 1024
+
+    @property
+    def monitor_db_size_warn_bytes(self) -> int:
+        return self.monitor_db_size_warn_mb * 1024 * 1024
+
+    @property
+    def monitor_db_size_critical_bytes(self) -> int:
+        return self.monitor_db_size_critical_mb * 1024 * 1024
 
     @property
     def admin_enabled(self) -> bool:

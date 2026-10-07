@@ -12,8 +12,10 @@
     worldTab: "players",
     selectedSnapshotId: null,
     auditOffset: 0,
+    monitorTimer: 0,
   };
   let generation = 0;
+  let monitorGeneration = 0;
 
   const $ = (id) => document.getElementById(id);
 
@@ -310,12 +312,7 @@
       $("dash-events").replaceChildren(stat("Events", "UNKNOWN"));
       $("dash-world").replaceChildren(h("p", { class: "muted", text: "Sign in to load world counts." }));
       $("dash-snapshot").replaceChildren(stat("Latest snapshot", "UNKNOWN"));
-      $("dash-gaps").replaceChildren(
-        stat("Worker heartbeat", "UNKNOWN"),
-        stat("Host CPU", "UNKNOWN"),
-        stat("Host memory", "UNKNOWN"),
-        stat("Host disk", "UNKNOWN")
-      );
+      $("dash-gaps").replaceChildren(h("p", { class: "muted", text: "Sign in to load probes." }));
       return;
     }
     const dash = await request("/v1/admin/dashboard");
@@ -366,12 +363,218 @@
       );
     }
     const gaps = dash.uninstrumented || {};
-    $("dash-gaps").replaceChildren(
-      stat("Worker heartbeat", gaps.worker_heartbeat),
-      stat("Host CPU", gaps.host_cpu),
-      stat("Host memory", gaps.host_memory),
-      stat("Host disk", gaps.host_disk)
+    const gapNames = Object.keys(gaps);
+    if (!gapNames.length) {
+      $("dash-gaps").replaceChildren(stat("Uninstrumented", "none"));
+    } else {
+      $("dash-gaps").replaceChildren.apply(
+        $("dash-gaps"),
+        gapNames.map((key) => stat(gapLabel(key), gaps[key]))
+      );
+    }
+  }
+
+  function gapLabel(key) {
+    if (key === "host_cpu") return "Host CPU";
+    if (key === "host_memory") return "Host memory";
+    return key;
+  }
+
+  function statusKind(status) {
+    const text = status == null ? "UNKNOWN" : String(status);
+    if (text === "OK" || text === "UP") return "ok";
+    if (text === "CRITICAL" || text === "DOWN") return "bad";
+    if (text === "WARN" || text === "STALE" || text === "UNKNOWN" || text === "NOT INSTRUMENTED") return "warn";
+    return probeKind(text);
+  }
+
+  function formatCheckValue(check) {
+    if (!check || check.value === null || check.value === undefined || check.value === "") return "—";
+    const unit = check.unit ? " " + check.unit : "";
+    return String(check.value) + unit;
+  }
+
+  function thresholdText(check) {
+    const threshold = check && check.threshold;
+    if (!threshold) return "No threshold on this check.";
+    const comparison = threshold.comparison ? " (" + threshold.comparison + ")" : "";
+    return "Threshold warn " + threshold.warn + " / critical " + threshold.critical + comparison;
+  }
+
+  function detailNode(detail) {
+    if (!detail || typeof detail !== "object") return null;
+    const pairs = [];
+    Object.keys(detail).forEach((key) => {
+      const value = detail[key];
+      let text;
+      if (value === null || value === undefined) text = "—";
+      else if (typeof value === "object") text = JSON.stringify(value);
+      else text = String(value);
+      pairs.push([key, text]);
+    });
+    return pairs.length ? kv(pairs) : null;
+  }
+
+  function renderMonitoring(body) {
+    const overall = (body && body.overall) || {};
+    const status = overall.status || "UNKNOWN";
+    const kind = statusKind(status);
+    const bannerClass =
+      kind === "ok" ? "verdict-pass" : kind === "bad" ? "verdict-fail" : "verdict-unknown";
+    $("monitor-updated").textContent = body && body.generated_at ? "Server time " + body.generated_at : "Server time UNKNOWN";
+    $("monitor-overall").replaceChildren(
+      h("div", { class: "verdict-banner " + bannerClass },
+        h("div", { class: "stat-label", text: "Overall" }),
+        h("div", { class: "verdict-value", text: status }),
+        h("p", { text: overall.reason || "UNKNOWN" })
+      )
     );
+    const note = $("monitor-note");
+    note.replaceChildren();
+    const api = body && body.api_process;
+    if (api) {
+      note.append(
+        h("p", { class: "muted", text: api.note || "API process measurements reset when the API restarts." }),
+        h("div", { class: "stats" },
+          stat("API version", api.version),
+          stat("API commit", api.commit),
+          stat("API uptime seconds", api.uptime_seconds),
+          stat("Resets on restart", api.resets_on_restart)
+        )
+      );
+    } else {
+      note.append(h("p", { class: "muted", text: "API process block missing from the server response." }));
+    }
+    const checks = body && Array.isArray(body.checks) ? body.checks : [];
+    const cards = checks.map((check) => {
+      const checkStatus = check && check.status ? check.status : "UNKNOWN";
+      const liveness = check && check.detail ? check.detail.liveness : null;
+      return h("article", { class: "check " + statusKind(checkStatus) },
+        h("div", { class: "check-top" },
+          h("h3", { text: check && check.name ? check.name : "check" }),
+          h("span", { class: "badge " + statusKind(checkStatus), text: checkStatus })
+        ),
+        liveness ? h("p", { class: "muted", text: "Liveness " + liveness }) : null,
+        h("p", { class: "check-value", text: formatCheckValue(check) }),
+        h("p", { class: "muted", text: thresholdText(check) }),
+        h("p", { text: check && check.reason ? check.reason : "UNKNOWN" }),
+        detailNode(check && check.detail)
+      );
+    });
+    $("monitor-checks").replaceChildren.apply($("monitor-checks"), cards.length ? cards : [h("p", { text: "No checks in the server response." })]);
+  }
+
+  function chartSvg(points) {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 320 140");
+    svg.setAttribute("class", "chart");
+    svg.setAttribute("role", "img");
+    const usable = (points || []).filter((point) => point && Number.isFinite(Number(point.value)));
+    if (!usable.length) {
+      const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      label.setAttribute("x", "12");
+      label.setAttribute("y", "72");
+      label.textContent = "No samples in this window.";
+      svg.append(label);
+      return svg;
+    }
+    const values = usable.map((point) => Number(point.value));
+    let min = Math.min.apply(null, values);
+    let max = Math.max.apply(null, values);
+    if (min === max) {
+      min -= 1;
+      max += 1;
+    }
+    const left = 8;
+    const right = 312;
+    const top = 16;
+    const bottom = 118;
+    const coords = usable.map((point, index) => {
+      const x = usable.length === 1 ? (left + right) / 2 : left + ((right - left) * index) / (usable.length - 1);
+      const y = bottom - ((Number(point.value) - min) / (max - min)) * (bottom - top);
+      return x + "," + y;
+    });
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+    line.setAttribute("class", "chart-line");
+    line.setAttribute("points", coords.join(" "));
+    svg.append(line);
+    if (usable.length === 1) {
+      const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      const parts = coords[0].split(",");
+      dot.setAttribute("class", "chart-dot");
+      dot.setAttribute("cx", parts[0]);
+      dot.setAttribute("cy", parts[1]);
+      dot.setAttribute("r", "3");
+      svg.append(dot);
+    }
+    const caption = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    caption.setAttribute("x", "8");
+    caption.setAttribute("y", "134");
+    caption.textContent = String(values[0]) + " → " + String(values[values.length - 1]);
+    svg.append(caption);
+    return svg;
+  }
+
+  function renderCharts(results) {
+    const blocks = results.map((result) => {
+      const history = result.history;
+      const points = history && Array.isArray(history.points) ? history.points : [];
+      const errorText = result.error && result.error.message ? result.error.message : "";
+      return h("div", { class: "chart-block" },
+        h("h3", { text: result.label }),
+        errorText ? h("p", { class: "error", text: errorText }) : chartSvg(points),
+        h("p", { class: "muted", text: points.length ? points.length + " samples" : "No samples in this window." })
+      );
+    });
+    $("monitor-charts").replaceChildren.apply($("monitor-charts"), blocks);
+  }
+
+  function stopMonitorRefresh() {
+    if (state.monitorTimer) {
+      window.clearInterval(state.monitorTimer);
+      state.monitorTimer = 0;
+    }
+  }
+
+  function startMonitorRefresh() {
+    stopMonitorRefresh();
+    const box = $("monitor-auto");
+    if (!box || !box.checked || state.view !== "monitoring") return;
+    state.monitorTimer = window.setInterval(() => {
+      if (state.view !== "monitoring" || !$("monitor-auto").checked) {
+        stopMonitorRefresh();
+        return;
+      }
+      loadMonitoring().catch(showError);
+    }, 15000);
+  }
+
+  async function loadMonitoring() {
+    const gen = ++monitorGeneration;
+    const windowName = $("monitor-window").value || "24h";
+    const body = await request("/v1/admin/monitoring");
+    if (gen !== monitorGeneration) return;
+    renderMonitoring(body);
+    const charts = [
+      ["event_lag_seconds", "Event lag (seconds)"],
+      ["queue_pending", "Queue pending"],
+      ["processing_rate_per_min", "Processing rate (per minute)"],
+      ["api_5xx_count", "API 5xx count"],
+      ["api_latency_p95_ms", "API latency p95 (ms)"],
+      ["disk_free_bytes", "Disk free (bytes)"],
+    ];
+    const results = await Promise.all(charts.map(async (item) => {
+      const metric = item[0];
+      const label = item[1];
+      try {
+        const history = await request("/v1/admin/monitoring/history" + query({ metric: metric, window: windowName }));
+        return { metric: metric, label: label, history: history, error: null };
+      } catch (error) {
+        return { metric: metric, label: label, history: null, error: error };
+      }
+    }));
+    if (gen !== monitorGeneration) return;
+    renderCharts(results);
   }
 
   function syncRestore() {
@@ -1061,7 +1264,7 @@
     if (head === "trace") {
       return { view: "trace", tab: null, entity: parts[1] || null, id: parts.slice(2).join("/") || null };
     }
-    const views = { dashboard: true, snapshots: true, events: true, battles: true, ledger: true, actions: true, trace: true, audit: true };
+    const views = { dashboard: true, snapshots: true, events: true, battles: true, ledger: true, actions: true, trace: true, audit: true, monitoring: true };
     if (views[head]) return { view: head, tab: null, entity: null, id: tail };
     return { view: "dashboard", tab: null, entity: null, id: null };
   }
@@ -1085,6 +1288,7 @@
     state.view = parsed.view;
     if (parsed.tab) state.worldTab = parsed.tab;
     showView(parsed.view);
+    if (parsed.view !== "monitoring") stopMonitorRefresh();
     clearError();
     try {
       if (parsed.view === "dashboard") await loadDashboard(gen);
@@ -1100,6 +1304,10 @@
       else if (parsed.view === "ledger") await loadLedger();
       else if (parsed.view === "trace") await loadTrace(parsed);
       else if (parsed.view === "audit") await loadAudit();
+      else if (parsed.view === "monitoring") {
+        await loadMonitoring();
+        if (gen === generation) startMonitorRefresh();
+      }
     } catch (error) {
       if (gen === generation) showError(error);
     }
@@ -1194,6 +1402,14 @@
     $("api-url").value = state.apiBaseUrl;
   });
   $("refresh-btn").addEventListener("click", () => route());
+  $("monitor-refresh").addEventListener("click", () => loadMonitoring().catch(showError));
+  $("monitor-auto").addEventListener("change", () => {
+    if ($("monitor-auto").checked) startMonitorRefresh();
+    else stopMonitorRefresh();
+  });
+  $("monitor-window").addEventListener("change", () => {
+    if (state.view === "monitoring") loadMonitoring().catch(showError);
+  });
   document.querySelectorAll("[data-nav]").forEach((button) => {
     button.addEventListener("click", () => {
       location.hash = button.getAttribute("data-nav");
