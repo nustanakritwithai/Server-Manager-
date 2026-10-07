@@ -100,25 +100,28 @@ The runner specs in the CI subsection are the `host` object from that job's `rep
 
 ### GitHub Actions `load-failure`
 
-Copied from `load-failure-report` on workflow run [37661993726](https://github.com/nustanakritwithai/Server-Manager-/actions/runs/37661993726), the Tests run for pull request head `f6eb137ac875d26b787fd4d3ffd9762163b06680`. `actions/checkout` on a pull request checks out the merge ref, so `report.json` `git_commit` is `fe1c3454ffeff80fa58156add53ff06c1f43b31b`. Result `PASS`, 106 of 106 checks, wall time 13.554 seconds.
+Headline numbers are copied from `load-failure-report` on workflow run [37662605881](https://github.com/nustanakritwithai/Server-Manager-/actions/runs/37662605881), the Tests run for pull request head `8b998c5b787dfc79cd026e48699d141e478f28df`. `actions/checkout` on a pull request checks out the merge ref, so `report.json` `git_commit` is `17dd0a29949a0458d171204a6ec20f86479ed265`. Result `PASS`, 106 of 106 checks, wall time 15.018 seconds.
 
-Runner, from that report's `host` object: `runner_os` Linux, `runner_name` GitHub Actions 1000010876, platform `Linux-6.17.0-1022-azure-x86_64-with-glibc2.39`, Python 3.12.14, `cpu_count` 4, memory 16766414848 bytes. This is a GitHub-hosted Linux VM. It is not the Windows VPS.
+Runner, from that report's `host` object: `runner_os` Linux, `runner_name` GitHub Actions 1000010879, platform `Linux-6.17.0-1022-azure-x86_64-with-glibc2.39`, Python 3.12.14, `cpu_count` 4, memory 16765374464 bytes. This is a GitHub-hosted Linux VM. It is not the Windows VPS.
 
-Load phase: 40 requests, target 8/s, achieved 7.999 requests/second over 5.000 seconds. All-route latency p50 11.596 ms, p95 36.426 ms, p99 45.510 ms (full values in the artifact are 11.596480000008569, 36.42568099999721, and 45.509967000015195). Errors by code: `http_200` 36, `conflict` 4. HTTP 5xx: 0. Connection errors: 0.
+Load phase: 40 requests, target 8/s, achieved 7.999 requests/second over 5.001 seconds. All-route latency p50 15.912 ms, p95 38.512 ms, p99 44.395 ms (full values in the artifact are 15.911832000000459, 38.51244800000586, and 44.39489799999308). Errors by code: `http_200` 36, `conflict` 4. HTTP 5xx: 0. Connection errors: 0.
 
-Load-phase `POST /v1/commands/attack` and `POST /v1/commands/garrison` were not drawn (n=0), so their load-phase latency is UNKNOWN. Scripted phase did call them: attack n=4, p50 12.094 ms, p95/p99 77.974 ms; garrison n=1, 8.464 ms.
+Load-phase `POST /v1/commands/attack` and `POST /v1/commands/garrison` were not drawn (n=0), so their load-phase latency is UNKNOWN. Scripted phase did call them: attack n=4, p50 17.234 ms, p95/p99 118.194 ms; garrison n=1, 10.536 ms.
 
 | Series | Status | What it is |
 | --- | --- | --- |
+| Steady `event_queue.lag` | MEASURED, n=18, p50/p95/p99/max 0 s | Game time minus the oldest due event while the admin offset was not changing, and not while a clock-advance backlog was still positive. |
+| `event_queue.lag` across an admin clock advance | MEASURED, n=6, p50 4681.551 s, p95/p99/max 5371.139 s | The same gauge after `POST /v1/admin/clock/advance`, until that backlog returned to zero. This is the jump, in game seconds. It is not wall-clock worker delay, and it is not included in the steady percentiles. |
 | `processed_at - due_at` | MEASURED, n=67, p50/p95/p99/max 0 s | Stored game timestamp. The worker sets `processed_at` to `due_at`. |
-| `event_queue.lag` in this artifact | MEASURED, n=23, p50 0 s, p95 4681.504 s, p99 5370.669 s, max 5370.669 s, 3 samples missing | This single series mixes quiet periods with samples taken while an admin clock advance had left events overdue. The p99 is the size of that jump still sitting in the queue, not wall-clock worker delay. |
-| `wall_at - due_at` | NOT INSTRUMENTED | `offset_seconds` was 12658, so wall time and game time are not comparable. |
+| `wall_at - due_at` | NOT INSTRUMENTED | `offset_seconds` was 12657, so wall time and game time are not comparable. |
 
-API pool utilization: n=23, p50 0.067, p95 0.133, max 0.133. Worker pool utilization: n=19, p50 0, p95 0, max 0. `pg_stat_activity` backends: n=25, p50 7, p95 8, max 8.
+4 monitoring samples did not include both a lag value and an offset, so they are in neither series.
 
-Host CPU percent: n=26, p50 24.8, p95 47.9, max 51.5. Host memory percent: n=26, p50 8.1, p95 8.3, max 8.4. Child API+worker CPU percent: n=24, p50 18.5, p95 106.5, max 137.9. Child RSS bytes: n=24, p50 164827136, p95 181039104, max 258514944.
+API pool utilization: n=24, p50 0.067, p95 0.133, p99/max 0.467. Worker pool utilization: n=20, p50/p95/p99/max 0. `pg_stat_activity` backends: n=27, p50 7, p95 8, max 8.
 
-The steady-clock series and the clock-advance series are separate fields after this change. They are not in artifact 37661993726, because that job ran the build that still stored one mixed series. They are UNKNOWN for that run, not zero.
+Host CPU percent: n=28, p50 27.8, p95 53.7, max 57.0. Host memory percent: n=28, p50 8.4, p95 8.9, max 8.9. Child API+worker CPU percent: n=26, p50 22.8, p95 109.3, max 186.4. Child RSS bytes: n=26, p50 157995008, p95 181006336, max 257478656.
+
+An earlier artifact, run [37661993726](https://github.com/nustanakritwithai/Server-Manager-/actions/runs/37661993726) for head `f6eb137`, stored one mixed `event_queue.lag` series: n=23, p50 0 s, p95 4681.504 s, p99 5370.669 s. That p99 mixes the clock jump into the same percentiles. It is not the steady lag. That run's host had 4 CPUs and 16766414848 bytes of memory (`runner_name` GitHub Actions 1000010876). Load-phase p50/p95/p99 there were 11.596 / 36.426 / 45.510 ms.
 
 ### Local rehearsal
 
@@ -142,7 +145,7 @@ Worker lag during the whole run, sampled about every 0.4s (25 samples, 3 misses)
 | `event_queue.lag` from monitoring, one mixed series | MEASURED | 25 | 0 s | 4681.068 s | 5370.658 s | 5370.658 s |
 | `wall_at - due_at` | NOT INSTRUMENTED | | | | | |
 
-The mixed `event_queue.lag` p99 is samples taken while an admin clock advance still had events overdue. It is the jump, measured in game seconds, not wall-clock worker delay. A later report keeps those samples under `monitoring_event_queue_lag_across_clock_advance_seconds` and does not fold them into the steady percentiles. Lag that grows while `offset_seconds` stays constant remains in the steady series. `wall_at - due_at` is NOT INSTRUMENTED because `offset_seconds` was 12658 after those advances.
+The mixed `event_queue.lag` p99 is samples taken while an admin clock advance still had events overdue. It is the jump, measured in game seconds, not wall-clock worker delay. A later local run of the split report, on this same VM, measured steady-clock `event_queue.lag` at n=20, p50/p95/p99/max 0 s, and the clock-advance series at n=5, p50 4678.751 s, p95/p99/max 5370.664 s. That second run is still this VM, not GitHub. Lag that grows while `offset_seconds` stays constant remains in the steady series. `wall_at - due_at` is NOT INSTRUMENTED because `offset_seconds` was 12658 after those advances.
 
 API pool utilization (`database.pool`): n=25, p50 0.067, p95 0.133, max 0.133. Worker pool utilization: n=22, p50 0, p95 0, max 0. `pg_stat_activity` backends: n=27, p50 6, p95 8, max 8. That backend count is not pool utilization.
 
@@ -199,6 +202,6 @@ python -m simcore.load probe \
 
 คำขอนั้นคือ `GET /health` และ `GET /health/ready` เท่านั้น
 
-ตัวเลขในหัวข้อ GitHub Actions `load-failure` คัดลอกจาก artifact ของงาน run 37661993726 บน runner Linux 4 CPU หน่วยความจำ 16766414848 ไบต์ ไม่ใช่ VPS ค่า p99 ของ `event_queue.lag` ที่ 5370 วินาทีใน artifact นั้นปนช่วงที่แอดมินเลื่อนนาฬิกา จึงไม่ใช่เวลาที่ worker ช้าบนนาฬิกาจริง รายงานหลังจากนี้แยกตัวอย่างช่วงเลื่อนนาฬิกาออกจากช่วงที่นาฬิกาเดินคงที่ ถ้า worker ช้าขณะ offset ไม่เปลี่ยน ค่านั้นยังอยู่ในชุดปกติ ตัวเลข Local rehearsal เป็นเครื่องพัฒนา ไม่ใช่ CI
+ตัวเลขหลักในหัวข้อ GitHub Actions คัดลอกจาก artifact ของ run 37662605881 (หัว `8b998c5`) บน runner Linux 4 CPU หน่วยความจำ 16765374464 ไบต์ ไม่ใช่ VPS ช่วงที่นาฬิกาคงที่ `event_queue.lag` เป็น 0 วินาที (n=18) ช่วงเลื่อนนาฬิกาแยกไว้ p99 5371.139 วินาที ซึ่งเป็นขนาดการกระโดดของเวลาเกม ไม่ใช่เวลาที่ worker ช้าบนนาฬิกาจริง ถ้า worker ช้าขณะ offset ไม่เปลี่ยน ค่านั้นยังอยู่ในชุดปกติ ตัวเลข Local rehearsal เป็นเครื่องพัฒนา ไม่ใช่ CI
 
 ช่องโหว่ที่แก้ในชุดนี้: `ledger_failures` เคยมองแถว `unit:` `building:` และ `research:` ว่าเป็นทรัพยากรที่ไม่รู้จัก ทั้งที่เซิร์ฟเวอร์เขียนแถวพวกนั้นเมื่อฝึกหน่วย สร้างอาคาร และวิจัยเสร็จ การตรวจสำรองข้อมูลจึงล้มบนโลกที่ปกติ ตอนนี้เทียบไม้ อาหาร เหล็ก และทองกับคอลัมน์เมือง เทียบอาคารกับ `cities.buildings` และเทียบการวิจัยกับ `players.research` แถวหน่วยทหารเป็นจำนวนในกองทัพ ไม่ได้เทียบกับคลังเมือง ไม่มี migration
