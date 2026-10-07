@@ -25,6 +25,7 @@ from simcore.admin_auth import (
     verify_admin_password,
 )
 from simcore.api.deps import _bearer, require_admin
+from simcore.audit import actor_from_request, write_audit
 from simcore.config import Settings
 from simcore.errors import GameError
 
@@ -62,14 +63,30 @@ def _require_login_configured(settings: Settings) -> None:
         )
 
 
+def _audit_login(request: Request, *, result: str, reason: str | None, actor: str = "admin") -> None:
+    write_audit(
+        actor=actor,
+        action="admin.login",
+        target="admin",
+        source_ip=client_address(request),
+        result=result,
+        reason=reason,
+    )
+
+
 @router.post("/login")
 def admin_login(body: LoginIn, request: Request) -> dict[str, object]:
     settings: Settings = request.app.state.settings
-    _require_login_configured(settings)
+    try:
+        _require_login_configured(settings)
+    except GameError as exc:
+        _audit_login(request, result="failure", reason=exc.message)
+        raise
     limiter: LoginRateLimiter = request.app.state.login_limiter
     address = client_address(request)
     now = time.time()
     if not limiter.allowed(address, now):
+        _audit_login(request, result="failure", reason="rate_limited")
         raise GameError(
             "Too many sign-in attempts from this address. Wait and try again.",
             status_code=429,
@@ -77,10 +94,14 @@ def admin_login(body: LoginIn, request: Request) -> dict[str, object]:
         )
     if not verify_admin_password(body.password, settings.admin_password_hash):
         limiter.record_failure(address, now)
+        _audit_login(request, result="failure", reason="invalid password")
         raise GameError("invalid password", status_code=401, code="unauthorized")
     limiter.record_success(address)
     book: AdminSessionBook = request.app.state.admin_sessions
     token, expires_at = issue_admin_session(settings, book)
+    admin_session = read_admin_session(token, settings, book)
+    actor = f"session:{admin_session.jti}" if admin_session is not None else "admin"
+    _audit_login(request, result="success", reason=None, actor=actor)
     return {
         "token_type": "Bearer",
         "token": token,
@@ -97,11 +118,20 @@ def admin_logout(
 ) -> dict[str, object]:
     settings: Settings = request.app.state.settings
     book: AdminSessionBook = request.app.state.admin_sessions
+    actor = actor_from_request(request)
     bearer = ""
     if credentials is not None and credentials.scheme.lower() == "bearer":
         bearer = credentials.credentials or ""
     session = read_admin_session(bearer, settings, book) if bearer else None
     if session is None:
+        write_audit(
+            actor=actor,
+            action="admin.logout",
+            target="admin",
+            source_ip=client_address(request),
+            result="success",
+            reason="static admin token is not a session",
+        )
         return {
             "revoked": False,
             "detail": (
@@ -110,6 +140,14 @@ def admin_logout(
             ),
         }
     book.revoke(session.jti)
+    write_audit(
+        actor=actor,
+        action="admin.logout",
+        target=f"session:{session.jti}",
+        source_ip=client_address(request),
+        result="success",
+        reason=None,
+    )
     return {"revoked": True}
 
 
@@ -119,4 +157,14 @@ def admin_revoke_sessions(
     _: Annotated[Settings, Depends(require_admin)],
 ) -> dict[str, object]:
     book: AdminSessionBook = request.app.state.admin_sessions
-    return {"revoked": "all", "session_epoch": book.revoke_all()}
+    actor = actor_from_request(request)
+    epoch = book.revoke_all()
+    write_audit(
+        actor=actor,
+        action="admin.sessions.revoke",
+        target="sessions",
+        source_ip=client_address(request),
+        result="success",
+        reason=f"session_epoch={epoch}",
+    )
+    return {"revoked": "all", "session_epoch": epoch}

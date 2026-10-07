@@ -9,6 +9,8 @@ from sqlalchemy.orm import Session
 
 from simcore.api.admin_login import router as admin_login_router
 from simcore.api.deps import get_clock, get_session, require_admin
+from simcore.api.trace_admin import audit_router, trace_router
+from simcore.audit import record_admin_action
 from simcore.api.inspect import (
     army_detail,
     city_detail,
@@ -35,6 +37,8 @@ from simcore.worker import run_once
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
 router.include_router(admin_login_router)
 router.include_router(snapshot_router)
+router.include_router(trace_router)
+router.include_router(audit_router)
 
 
 class AdvanceIn(BaseModel):
@@ -196,27 +200,65 @@ def admin_report_detail(
 @router.post("/clock/advance")
 def advance_clock(
     body: AdvanceIn,
+    request: Request,
     session: Annotated[Session, Depends(get_session)],
     clock: Annotated[OffsetClock, Depends(get_clock)],
     _: Annotated[Settings, Depends(require_admin)],
 ) -> dict[str, object]:
-    if body.seconds < 0 or body.minutes < 0 or body.hours < 0:
-        from simcore.errors import GameError
+    from simcore.errors import GameError
 
-        raise GameError("cannot rewind time", code="invalid_command")
-    now = clock.advance(seconds=body.seconds, minutes=body.minutes, hours=body.hours)
-    session.flush()
+    try:
+        if body.seconds < 0 or body.minutes < 0 or body.hours < 0:
+            raise GameError("cannot rewind time", code="invalid_command")
+        now = clock.advance(seconds=body.seconds, minutes=body.minutes, hours=body.hours)
+        session.flush()
+    except GameError as exc:
+        record_admin_action(
+            request,
+            action="clock.advance",
+            target="clock",
+            result="failure",
+            reason=exc.message,
+        )
+        raise
+    record_admin_action(
+        request,
+        action="clock.advance",
+        target="clock",
+        result="success",
+        reason=f"seconds={body.seconds} minutes={body.minutes} hours={body.hours}",
+    )
     return {"server_time": now, "offset_seconds": clock.offset_seconds}
 
 
 @router.post("/events/{event_id}/run")
 def run_event(
     event_id: int,
+    request: Request,
     session: Annotated[Session, Depends(get_session)],
     clock: Annotated[OffsetClock, Depends(get_clock)],
     _: Annotated[Settings, Depends(require_admin)],
 ) -> dict[str, object]:
-    event = run_event_now(session, event_id, clock.now(), worker_id="admin")
+    from simcore.errors import GameError
+
+    try:
+        event = run_event_now(session, event_id, clock.now(), worker_id="admin")
+    except GameError as exc:
+        record_admin_action(
+            request,
+            action="event.run",
+            target=f"event:{event_id}",
+            result="failure",
+            reason=exc.message,
+        )
+        raise
+    record_admin_action(
+        request,
+        action="event.run",
+        target=f"event:{event_id}",
+        result="success",
+        reason=event.status,
+    )
     return {
         "id": event.id,
         "type": event.type,
@@ -239,17 +281,34 @@ def worker_tick(
     failed: list[int] = []
     paused = False
     base = request.app.state.base_clock
-    for _ in range(limit):
-        status, event_id = run_once(base)
-        if status == "paused":
-            paused = True
-            break
-        if status == "empty":
-            break
-        if status == "processed" and event_id is not None:
-            processed.append(event_id)
-        elif event_id is not None:
-            failed.append(event_id)
+    try:
+        for _ in range(limit):
+            status, event_id = run_once(base)
+            if status == "paused":
+                paused = True
+                break
+            if status == "empty":
+                break
+            if status == "processed" and event_id is not None:
+                processed.append(event_id)
+            elif event_id is not None:
+                failed.append(event_id)
+    except Exception as exc:
+        record_admin_action(
+            request,
+            action="worker.tick",
+            target="worker",
+            result="failure",
+            reason=exc.__class__.__name__,
+        )
+        raise
+    record_admin_action(
+        request,
+        action="worker.tick",
+        target="worker",
+        result="success",
+        reason=f"processed={len(processed)} failed={len(failed)} paused={paused}",
+    )
     return {
         "processed": len(processed),
         "failed": len(failed),

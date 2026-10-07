@@ -229,6 +229,7 @@ def _timed_event_body(event: Event) -> dict[str, object]:
         "status": event.status,
         "due_at": event.due_at,
         "payload": event.payload,
+        "trace_id": event.trace_id,
     }
 
 

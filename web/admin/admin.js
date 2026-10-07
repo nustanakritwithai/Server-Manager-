@@ -11,6 +11,7 @@
     view: "dashboard",
     worldTab: "players",
     selectedSnapshotId: null,
+    auditOffset: 0,
   };
   let generation = 0;
 
@@ -136,9 +137,9 @@
 
   function probeKind(value) {
     const text = probeText(value);
-    if (text === "ok" || text === "READY") return "ok";
-    if (text === "degraded" || text === "FAILED" || text === "failed") return "bad";
-    if (text === "NOT INSTRUMENTED" || text === "UNKNOWN") return "warn";
+    if (text === "ok" || text === "READY" || text === "PASS" || text === "success") return "ok";
+    if (text === "degraded" || text === "FAILED" || text === "failed" || text === "FAIL" || text === "failure") return "bad";
+    if (text === "NOT INSTRUMENTED" || text === "UNKNOWN" || text === "INCOMPLETE" || text === "NOT CHECKED" || text === "LEGACY" || text === "NOT TRACED") return "warn";
     return "";
   }
 
@@ -155,6 +156,18 @@
   function idLink(kind, id, label) {
     if (id === undefined || id === null || id === "") return h("span", { text: "—" });
     return h("a", { href: "#" + kind + "/" + id, text: label == null ? String(id) : String(label) });
+  }
+
+  function traceLink(traceId) {
+    if (traceId === undefined || traceId === null || traceId === "") {
+      return h("span", { class: "badge warn", text: "LEGACY / NOT TRACED" });
+    }
+    return h("a", { href: "#trace/id/" + traceId, text: String(traceId) });
+  }
+
+  function verdictClass(verdict) {
+    const text = verdict == null || verdict === "" ? "unknown" : String(verdict).toLowerCase().replace(/\s+/g, "-");
+    return "verdict-banner verdict-" + text;
   }
 
   function raw(value) {
@@ -456,6 +469,7 @@
       { label: "Last error", cell: (row) => blank(row.last_error) },
       { label: "Idempotency", cell: (row) => row.idempotency_key },
       { label: "Movement", cell: (row) => idLink("movement", row.movement_id) },
+      { label: "Trace", cell: (row) => traceLink(row.trace_id) },
     ];
   }
 
@@ -480,6 +494,7 @@
         ["army", body.army ? idLink("army", body.army.id, body.army.name + " #" + body.army.id) : "—"],
         ["player", body.army ? idLink("player", body.army.player_id) : "—"],
         ["battle", body.battle ? idLink("battles", body.battle.id, "report " + body.battle.id + " · " + body.battle.winner) : "—"],
+        ["trace", traceLink(event.trace_id)],
       ]),
       h("h4", { text: "Payload" }),
       raw(event.payload),
@@ -535,6 +550,7 @@
       { label: "Dest city", cell: (row) => idLink("city", row.destination_city_id) },
       { label: "Cause event", cell: (row) => idLink("events", row.cause_event_id) },
       { label: "Resolved", cell: (row) => blank(row.resolved_at) },
+      { label: "Trace", cell: (row) => traceLink(row.trace_id) },
     ];
   }
 
@@ -608,6 +624,7 @@
           ["research", JSON.stringify(body.player.research)],
           ["created_at", body.player.created_at],
           ["balances", body.resource_balances],
+          ["traces", h("a", { href: "#trace/player/" + body.player.id, text: "Find traces" })],
         ])
       );
       const cities = h("div");
@@ -668,6 +685,7 @@
           ["location", idLink("city", army.location_city_id)],
           ["units", JSON.stringify(army.units)],
           ["position", JSON.stringify(army.position)],
+          ["traces", h("a", { href: "#trace/army/" + army.id, text: "Find traces" })],
         ])
       );
       const moves = h("div");
@@ -693,6 +711,7 @@
           ["cause_event", idLink("events", movement.cause_event_id)],
           ["resolved_at", movement.resolved_at],
           ["battle", body.battle ? idLink("battles", body.battle.id, "report " + body.battle.id) : "—"],
+          ["trace", traceLink(movement.trace_id)],
         ])
       );
       const events = h("div");
@@ -716,6 +735,7 @@
         ["seed", report.seed],
         ["winner", report.winner],
         ["created_at", report.created_at],
+        ["trace", traceLink(report.trace_id)],
       ]),
       h("h4", { text: "Before / remaining / casualties" }),
       raw({
@@ -798,12 +818,225 @@
         { label: "Balance after", cell: (row) => row.balance_after },
         { label: "Reason", cell: (row) => row.reason },
         { label: "Event", cell: (row) => idLink("events", row.source_event_id) },
+        { label: "Trace", cell: (row) => traceLink(row.trace_id) },
         { label: "Idempotency", cell: (row) => row.idempotency_key },
         { label: "Created", cell: (row) => row.created_at },
       ],
       body.transactions || [],
       "No transactions."
     );
+  }
+
+  function fieldPairs(value) {
+    if (value == null || typeof value !== "object") {
+      return [["value", blank(value)]];
+    }
+    return Object.keys(value).map((key) => {
+      const item = value[key];
+      const shown = item != null && typeof item === "object" ? JSON.stringify(item) : blank(item);
+      return [key, shown];
+    });
+  }
+
+  function renderVerdict(target, verdict) {
+    const text = verdict == null || verdict === "" ? "UNKNOWN" : String(verdict);
+    target.replaceChildren(
+      h("div", { class: verdictClass(verdict) },
+        h("div", { class: "stat-label", text: "Integrity verdict" }),
+        h("div", { class: "verdict-value", text: text })
+      )
+    );
+  }
+
+  function renderTraceDetail(body) {
+    renderVerdict($("trace-verdict"), body && body.verdict);
+    const reasons = (body && body.reasons) || [];
+    const reasonHost = $("trace-reasons");
+    reasonHost.replaceChildren(h("h3", { text: "Reasons" }));
+    if (!reasons.length) {
+      reasonHost.append(h("p", { class: "muted", text: body && body.verdict === "FAIL" ? "The server returned no reasons." : "No reasons returned." }));
+    } else {
+      const list = h("ul", { class: "reason-list" });
+      reasons.forEach((reason) => list.append(h("li", { text: reason })));
+      reasonHost.append(list);
+    }
+    const integrity = (body && body.integrity) || {};
+    const checks = integrity.checks || [];
+    const notChecked = integrity.not_checked || [];
+    const checkHost = $("trace-checks");
+    const checkTable = h("div");
+    const uncheckedTable = h("div");
+    checkHost.replaceChildren(h("h3", { text: "Checks" }), checkTable, h("h3", { text: "Not checked" }), uncheckedTable);
+    renderTable(
+      checkTable,
+      [
+        { label: "Check", cell: (row) => row.name },
+        { label: "Status", cell: (row) => badge(row.status) },
+        { label: "Reasons", cell: (row) => (row.reasons || []).join("; ") },
+      ],
+      checks,
+      "No checks in the server response."
+    );
+    renderTable(
+      uncheckedTable,
+      [
+        { label: "Check", cell: (row) => row.name },
+        { label: "Status", cell: (row) => badge(row.status) },
+        { label: "Detail", cell: (row) => row.detail },
+      ],
+      notChecked,
+      "No unchecked items in the server response."
+    );
+    $("trace-legacy").replaceChildren();
+    $("trace-list").replaceChildren();
+    const timeline = $("trace-timeline");
+    timeline.replaceChildren(h("h3", { text: "Timeline" }));
+    const steps = (body && body.steps) || [];
+    if (!steps.length) {
+      timeline.append(h("p", { class: "muted", text: "No steps in the server response." }));
+      return;
+    }
+    const list = h("div", { class: "timeline" });
+    steps.forEach((step) => {
+      list.append(
+        h("article", { class: "timeline-step" },
+          h("div", { class: "timeline-type", text: step.type }),
+          h("p", { class: "muted", text: blank(step.game_time) }),
+          h("h4", { text: "Ids" }),
+          kv(fieldPairs(step.ids)),
+          h("h4", { text: "Fields" }),
+          kv(fieldPairs(step.fields))
+        )
+      );
+    });
+    timeline.append(list);
+  }
+
+  function renderTraceSearch(body) {
+    $("trace-verdict").replaceChildren();
+    $("trace-reasons").replaceChildren();
+    $("trace-checks").replaceChildren();
+    $("trace-timeline").replaceChildren();
+    const legacy = (body && body.legacy) || [];
+    const legacyHost = $("trace-legacy");
+    const legacyTable = h("div");
+    legacyHost.replaceChildren(h("h3", { text: "Legacy" }), legacyTable);
+    renderTable(
+      legacyTable,
+      [
+        { label: "Kind", cell: (row) => row.kind },
+        { label: "Id", cell: (row) => row.id },
+        { label: "Trace", cell: (row) => row.trace },
+        { label: "Detail", cell: (row) => row.detail },
+      ],
+      legacy,
+      "No legacy rows for this query."
+    );
+    const traces = (body && body.traces) || [];
+    const listHost = $("trace-list");
+    const traceTable = h("div");
+    listHost.replaceChildren(h("h3", { text: "Traces" }), traceTable);
+    renderTable(
+      traceTable,
+      [
+        { label: "Trace", cell: (row) => traceLink(row.trace_id) },
+        { label: "Command", cell: (row) => row.command_id },
+        { label: "Type", cell: (row) => row.command_type },
+        { label: "Player", cell: (row) => row.player_id },
+        { label: "Army", cell: (row) => row.army_id },
+        { label: "Verdict", cell: (row) => badge(row.verdict) },
+      ],
+      traces,
+      "No traces for this query."
+    );
+  }
+
+  function clearTrace() {
+    $("trace-verdict").replaceChildren();
+    $("trace-reasons").replaceChildren();
+    $("trace-checks").replaceChildren();
+    $("trace-legacy").replaceChildren();
+    $("trace-list").replaceChildren();
+    $("trace-timeline").replaceChildren();
+  }
+
+  async function loadTrace(parsed) {
+    const entity = parsed.entity;
+    const id = parsed.id;
+    if (!entity) {
+      clearTrace();
+      return;
+    }
+    if (entity === "id" && id) {
+      $("trace-id").value = id;
+      renderTraceDetail(await request("/v1/admin/trace/" + encodeURIComponent(id)));
+      return;
+    }
+    const params = {};
+    if (entity === "player" && id) params.player = id;
+    else if (entity === "army" && id) params.army = id;
+    else if (entity === "event" && id) params.event = id;
+    else if (entity === "command" && id) params.command = id;
+    else return;
+    if (params.player) $("trace-player").value = params.player;
+    if (params.army) $("trace-army").value = params.army;
+    if (params.event) $("trace-event").value = params.event;
+    if (params.command) $("trace-command").value = params.command;
+    renderTraceSearch(await request("/v1/admin/trace" + query(params)));
+  }
+
+  function renderAudit(body) {
+    const chain = (body && body.chain) || {};
+    const status = chain.status == null || chain.status === "" ? "UNKNOWN" : String(chain.status);
+    const chainHost = $("audit-chain");
+    chainHost.replaceChildren(
+      h("div", { class: verdictClass(status) },
+        h("div", { class: "stat-label", text: "Chain status" }),
+        h("div", { class: "verdict-value", text: status }),
+        h("p", { class: "muted", text: "Checked rows: " + blank(chain.checked_rows) })
+      )
+    );
+    const reasons = chain.reasons || [];
+    if (reasons.length) {
+      const list = h("ul", { class: "reason-list" });
+      reasons.forEach((reason) => list.append(h("li", { text: reason })));
+      chainHost.append(list);
+    }
+    renderTable(
+      $("audit-table"),
+      [
+        { label: "Id", cell: (row) => row.id },
+        { label: "When", cell: (row) => row.timestamp },
+        { label: "Actor", cell: (row) => row.actor },
+        { label: "Action", cell: (row) => row.action },
+        { label: "Target", cell: (row) => row.target },
+        { label: "IP", cell: (row) => row.source_ip },
+        { label: "Result", cell: (row) => badge(row.result) },
+        { label: "Reason", cell: (row) => blank(row.reason) },
+      ],
+      (body && body.entries) || [],
+      "No audit rows."
+    );
+    const total = body && body.total != null ? body.total : 0;
+    const offset = body && body.offset != null ? body.offset : 0;
+    const limit = body && body.limit != null ? body.limit : 50;
+    $("audit-page").textContent = "Showing " + (total ? offset + 1 : 0) + "–" + Math.min(offset + limit, total) + " of " + total;
+    $("audit-prev").disabled = offset <= 0;
+    $("audit-next").disabled = offset + limit >= total;
+  }
+
+  async function loadAudit() {
+    const body = await request(
+      "/v1/admin/audit" +
+        query({
+          limit: 50,
+          offset: state.auditOffset,
+          actor: $("audit-actor").value.trim(),
+          action: $("audit-action").value.trim(),
+          result: $("audit-result").value.trim(),
+        })
+    );
+    renderAudit(body);
   }
 
   function wireAck(boxId, buttonId) {
@@ -825,7 +1058,10 @@
       const tabs = { players: true, cities: true, armies: true, movements: true };
       return { view: "world", tab: tabs[tail] ? tail : "players", entity: null, id: null };
     }
-    const views = { dashboard: true, snapshots: true, events: true, battles: true, ledger: true, actions: true };
+    if (head === "trace") {
+      return { view: "trace", tab: null, entity: parts[1] || null, id: parts.slice(2).join("/") || null };
+    }
+    const views = { dashboard: true, snapshots: true, events: true, battles: true, ledger: true, actions: true, trace: true, audit: true };
     if (views[head]) return { view: head, tab: null, entity: null, id: tail };
     return { view: "dashboard", tab: null, entity: null, id: null };
   }
@@ -862,6 +1098,8 @@
       else if (parsed.view === "world") await loadWorld(parsed.entity, parsed.id);
       else if (parsed.view === "battles") await loadBattles(parsed.id);
       else if (parsed.view === "ledger") await loadLedger();
+      else if (parsed.view === "trace") await loadTrace(parsed);
+      else if (parsed.view === "audit") await loadAudit();
     } catch (error) {
       if (gen === generation) showError(error);
     }
@@ -983,6 +1221,36 @@
   $("ledger-filter").addEventListener("submit", (event) => {
     event.preventDefault();
     loadLedger().catch(showError);
+  });
+  $("trace-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const traceId = $("trace-id").value.trim();
+    const player = $("trace-player").value.trim();
+    const army = $("trace-army").value.trim();
+    const eventId = $("trace-event").value.trim();
+    const commandId = $("trace-command").value.trim();
+    let next = "trace";
+    if (traceId) next = "trace/id/" + traceId;
+    else if (eventId) next = "trace/event/" + eventId;
+    else if (army) next = "trace/army/" + army;
+    else if (player) next = "trace/player/" + player;
+    else if (commandId) next = "trace/command/" + commandId;
+    if (location.hash === "#" + next) loadTrace(parseHash()).catch(showError);
+    else location.hash = next;
+  });
+  $("audit-filter").addEventListener("submit", (event) => {
+    event.preventDefault();
+    state.auditOffset = 0;
+    if (location.hash !== "#audit") location.hash = "audit";
+    else loadAudit().catch(showError);
+  });
+  $("audit-prev").addEventListener("click", () => {
+    state.auditOffset = Math.max(0, state.auditOffset - 50);
+    loadAudit().catch(showError);
+  });
+  $("audit-next").addEventListener("click", () => {
+    state.auditOffset += 50;
+    loadAudit().catch(showError);
   });
   wireAck("clock-ack", "clock-go");
   wireAck("run-ack", "run-go");

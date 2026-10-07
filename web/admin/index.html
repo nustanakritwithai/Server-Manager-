@@ -64,6 +64,8 @@
       <button type="button" data-nav="world">World</button>
       <button type="button" data-nav="battles">Battles</button>
       <button type="button" data-nav="ledger">Ledger</button>
+      <button type="button" data-nav="trace">Event trace</button>
+      <button type="button" data-nav="audit">Audit log</button>
       <button type="button" data-nav="actions">Actions</button>
     </nav>
 
@@ -196,6 +198,54 @@
         <div id="ledger-table"></div>
       </section>
 
+      <section data-view="trace" class="panel" hidden>
+        <div class="panel-head">
+          <h2>Event trace</h2>
+          <p class="muted">Enter a trace id, or open one from an event, army, movement, or report. The timeline and the verdict come from the server. This page does not score them.</p>
+        </div>
+        <form id="trace-form" class="stack">
+          <label>
+            <span class="label">Trace id</span>
+            <input id="trace-id" autocomplete="off" spellcheck="false" />
+          </label>
+          <div class="row">
+            <label class="grow"><span class="label">Player</span><input id="trace-player" inputmode="numeric" autocomplete="off" /></label>
+            <label class="grow"><span class="label">Army</span><input id="trace-army" inputmode="numeric" autocomplete="off" /></label>
+            <label class="grow"><span class="label">Event</span><input id="trace-event" inputmode="numeric" autocomplete="off" /></label>
+            <label class="grow"><span class="label">Command</span><input id="trace-command" inputmode="numeric" autocomplete="off" /></label>
+          </div>
+          <div class="row">
+            <button type="submit">Load trace</button>
+          </div>
+        </form>
+        <div id="trace-verdict"></div>
+        <div id="trace-reasons"></div>
+        <div id="trace-checks"></div>
+        <div id="trace-legacy"></div>
+        <div id="trace-list"></div>
+        <div id="trace-timeline"></div>
+      </section>
+
+      <section data-view="audit" class="panel" hidden>
+        <div class="panel-head">
+          <h2>Audit log</h2>
+          <p class="muted">Append-only. Chain status is computed on the server for the whole log, not just this page. This page cannot edit or delete rows.</p>
+        </div>
+        <form id="audit-filter" class="row">
+          <label class="grow"><span class="label">Actor</span><input id="audit-actor" autocomplete="off" /></label>
+          <label class="grow"><span class="label">Action</span><input id="audit-action" autocomplete="off" /></label>
+          <label class="grow"><span class="label">Result</span><input id="audit-result" autocomplete="off" /></label>
+          <button type="submit">Apply</button>
+        </form>
+        <div id="audit-chain"></div>
+        <div id="audit-table"></div>
+        <div class="row">
+          <button type="button" id="audit-prev" class="ghost">Previous</button>
+          <button type="button" id="audit-next" class="ghost">Next</button>
+          <p id="audit-page" class="muted"></p>
+        </div>
+      </section>
+
       <section data-view="actions" class="panel" hidden>
         <div class="panel-head">
           <h2>Admin actions</h2>
@@ -232,7 +282,7 @@
     </main>
 
     <footer class="foot">
-      <p>The browser displays state and sends admin commands. Snapshot restore, event processing, combat, and the ledger stay on the server.</p>
+      <p>The browser displays state and sends admin commands. Snapshot restore, event processing, combat, the ledger, trace verdicts, and the audit chain stay on the server.</p>
     </footer>
 
     <script src="../config.js"></script>

@@ -203,6 +203,45 @@ td.wrap, th.wrap { white-space: normal; }
 .links { display: flex; flex-wrap: wrap; gap: 8px; }
 .foot { padding: 16px 0 28px; color: var(--muted); font-size: 0.85rem; }
 
+.verdict-banner {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+}
+.verdict-value {
+  font-size: 1.35rem;
+  font-weight: 750;
+  margin-top: 4px;
+  word-break: break-word;
+}
+.verdict-pass { border-color: #1f6b2c; }
+.verdict-pass .verdict-value { color: var(--ok); }
+.verdict-fail { border-color: #8b2e2e; }
+.verdict-fail .verdict-value { color: #ffb4ab; }
+.verdict-incomplete .verdict-value,
+.verdict-legacy .verdict-value,
+.verdict-not-checked .verdict-value,
+.verdict-unknown .verdict-value { color: var(--warn); }
+
+.reason-list { margin: 8px 0 0; padding-left: 18px; }
+.reason-list li { margin: 4px 0; }
+
+.timeline { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.timeline-step {
+  border-left: 3px solid var(--accent);
+  background: var(--panel-2);
+  border-radius: 0 8px 8px 0;
+  padding: 8px 10px;
+}
+.timeline-type {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.75rem;
+}
+
 details.advanced { margin-top: 12px; }
 details.advanced summary {
   cursor: pointer;
@@ -218,4 +257,6 @@ details.advanced form { margin-top: 8px; }
   .top { flex-direction: column; align-items: flex-start; }
   h1 { font-size: 1.25rem; }
   input, select, button { font-size: 16px; }
+  .nav button { flex: 1 1 calc(50% - 6px); }
+  .timeline-step, .verdict-banner, .panel { overflow-wrap: anywhere; }
 }

@@ -34,6 +34,7 @@ def schedule_movement(
     loot: dict[str, int] | None = None,
     cause_event_id: int | None = None,
     payload_extra: dict[str, object] | None = None,
+    trace_id: str | None = None,
 ) -> tuple[Movement, Event]:
     try:
         seconds = travel_seconds(origin_x, origin_y, destination_x, destination_y, stacks)
@@ -59,6 +60,7 @@ def schedule_movement(
         loot_iron=int(haul.get("iron", 0)),
         loot_gold=int(haul.get("gold", 0)),
         cause_event_id=cause_event_id,
+        trace_id=trace_id,
         created_at=depart_at,
     )
     session.add(movement)
@@ -85,6 +87,7 @@ def schedule_movement(
         attempts=0,
         idempotency_key=idempotency_key,
         movement_id=movement.id,
+        trace_id=trace_id,
         created_at=depart_at,
     )
     session.add(event)

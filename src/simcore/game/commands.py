@@ -20,6 +20,7 @@ from simcore.game.combat import payload_to_stacks
 from simcore.game.economy import accrue_city
 from simcore.game.locks import lock_armies, lock_cities
 from simcore.game.scheduling import schedule_movement
+from simcore.game.tracing import record_command
 from simcore.game.travel import distance, interpolate, travel_progress
 from simcore.models import Army, City, Event, Movement, Player
 from simcore.world import bump_world_version, require_commands_open
@@ -74,6 +75,14 @@ def move_army(
 
     accrue_city(session, origin, now)
     stacks = payload_to_stacks(army.units)
+    trace_id = record_command(
+        session,
+        player_id=player.id,
+        command_type="move",
+        army_id=army.id,
+        target={"destination_city_id": destination.id, "relocate": relocate},
+        now=now,
+    )
     return schedule_movement(
         session,
         army=army,
@@ -89,6 +98,7 @@ def move_army(
         event_type=EventType.ARMY_ARRIVE,
         idempotency_key=f"move:{army.id}:{destination.id}:{int(now.timestamp())}",
         relocate=relocate,
+        trace_id=trace_id,
     )
 
 
@@ -120,6 +130,14 @@ def attack_city(
 
     accrue_city(session, origin, now)
     stacks = payload_to_stacks(army.units)
+    trace_id = record_command(
+        session,
+        player_id=player.id,
+        command_type="attack",
+        army_id=army.id,
+        target={"target_city_id": target.id},
+        now=now,
+    )
     movement, event = schedule_movement(
         session,
         army=army,
@@ -134,6 +152,7 @@ def attack_city(
         stacks=stacks,
         event_type=EventType.ARMY_ARRIVE,
         idempotency_key=f"attack:{army.id}:{target.id}:{int(now.timestamp())}",
+        trace_id=trace_id,
     )
     # The arrival event key used by replay/cancel is stable per movement.
     event.idempotency_key = f"arrive:{movement.id}"
@@ -175,6 +194,14 @@ def recall_army(session: Session, player: Player, army_id: int, now: datetime) -
             raise GameError("army is not in a city you control", status_code=403, code="forbidden")
         accrue_city(session, origin, now)
         stacks = payload_to_stacks(army.units)
+        trace_id = record_command(
+            session,
+            player_id=player.id,
+            command_type="recall",
+            army_id=army.id,
+            target={"home_city_id": home.id, "from_city_id": origin.id},
+            now=now,
+        )
         return schedule_movement(
             session,
             army=army,
@@ -189,6 +216,7 @@ def recall_army(session: Session, player: Player, army_id: int, now: datetime) -
             stacks=stacks,
             event_type=EventType.ARMY_RETURN,
             idempotency_key=f"recall-garrison:{army.id}:{origin.id}:{int(now.timestamp())}",
+            trace_id=trace_id,
         )
 
     if active is None or active.status != MovementStatus.IN_PROGRESS:
@@ -205,6 +233,14 @@ def recall_army(session: Session, player: Player, army_id: int, now: datetime) -
     active.resolved_at = now
     session.flush()
 
+    trace_id = record_command(
+        session,
+        player_id=player.id,
+        command_type="recall",
+        army_id=army.id,
+        target={"home_city_id": home.id, "cancelled_movement_id": active.id},
+        now=now,
+    )
     # Recalling before the army has left its tile puts it straight back in the garrison.
     if distance(x, y, float(home.x), float(home.y)) < 1e-6:
         army.status = ArmyStatus.GARRISONED
@@ -227,6 +263,7 @@ def recall_army(session: Session, player: Player, army_id: int, now: datetime) -
             loot_iron=0,
             loot_gold=0,
             cause_event_id=pending_event.id,
+            trace_id=trace_id,
             created_at=now,
             resolved_at=now,
         )
@@ -240,6 +277,7 @@ def recall_army(session: Session, player: Player, army_id: int, now: datetime) -
             attempts=0,
             idempotency_key=f"recall:{active.id}",
             movement_id=movement.id,
+            trace_id=trace_id,
             processed_at=now,
             created_at=now,
         )
@@ -264,6 +302,7 @@ def recall_army(session: Session, player: Player, army_id: int, now: datetime) -
         event_type=EventType.ARMY_RETURN,
         idempotency_key=f"recall:{active.id}",
         cause_event_id=pending_event.id,
+        trace_id=trace_id,
     )
 
 
@@ -275,6 +314,14 @@ def queue_build(session: Session, player: Player, city_id: int, building: str, n
     city = cities[city_id]
     if city.player_id != player.id:
         raise GameError("that city belongs to another player", status_code=403, code="forbidden")
+    trace_id = record_command(
+        session,
+        player_id=player.id,
+        command_type="build",
+        army_id=None,
+        target={"city_id": city.id, "building": building},
+        now=now,
+    )
     event = Event(
         due_at=now + timedelta(seconds=BUILD_SECONDS),
         type=EventType.BUILD_COMPLETE,
@@ -282,6 +329,7 @@ def queue_build(session: Session, player: Player, city_id: int, building: str, n
         status=EventStatus.PENDING,
         attempts=0,
         idempotency_key=f"build:{city.id}:{building}:{int(now.timestamp())}",
+        trace_id=trace_id,
         created_at=now,
     )
     session.add(event)
@@ -294,6 +342,14 @@ def queue_research(session: Session, player: Player, tech: str, now: datetime) -
     require_commands_open(session)
     if tech not in RESEARCH:
         raise GameError(f"unknown research {tech}", code="invalid_command")
+    trace_id = record_command(
+        session,
+        player_id=player.id,
+        command_type="research",
+        army_id=None,
+        target={"tech": tech},
+        now=now,
+    )
     event = Event(
         due_at=now + timedelta(seconds=RESEARCH_SECONDS),
         type=EventType.RESEARCH_COMPLETE,
@@ -301,6 +357,7 @@ def queue_research(session: Session, player: Player, tech: str, now: datetime) -
         status=EventStatus.PENDING,
         attempts=0,
         idempotency_key=f"research:{player.id}:{tech}:{int(now.timestamp())}",
+        trace_id=trace_id,
         created_at=now,
     )
     session.add(event)

@@ -25,6 +25,7 @@ def movement_body(movement: Movement, event: Event | None) -> dict[str, object]:
         "status": movement.status,
         "depart_at": movement.depart_at,
         "arrive_at": movement.arrive_at,
+        "trace_id": movement.trace_id,
         "origin": _position(movement.origin_city_id, movement.origin_x, movement.origin_y),
         "destination": _position(movement.destination_city_id, movement.destination_x, movement.destination_y),
     }
@@ -89,6 +90,7 @@ def report_body(report: BattleReport) -> dict[str, object]:
         "defender_resources": report.defender_resources,
         "loot": report.loot,
         "rounds": report.rounds,
+        "trace_id": report.trace_id,
         "created_at": report.created_at,
     }
 
