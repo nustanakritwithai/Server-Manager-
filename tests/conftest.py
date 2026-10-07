@@ -41,6 +41,8 @@ def truncate() -> None:
             text(
                 """
                 TRUNCATE TABLE
+                  world_snapshot_payloads,
+                  world_snapshots,
                   transactions,
                   battle_reports,
                   events,
@@ -52,7 +54,18 @@ def truncate() -> None:
                 """
             )
         )
-        session.execute(text("UPDATE world_state SET offset_seconds = 0"))
+        session.execute(
+            text(
+                """
+                UPDATE world_state
+                SET offset_seconds = 0,
+                    world_version = 0,
+                    commands_open = true,
+                    worker_paused = false,
+                    restore_active = false
+                """
+            )
+        )
         session.commit()
     finally:
         session.close()

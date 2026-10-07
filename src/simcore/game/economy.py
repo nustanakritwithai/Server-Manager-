@@ -11,6 +11,7 @@ from simcore.constants import RESOURCES, ArmyStatus, Reason
 from simcore.game.catalog import UNIT_CATALOG
 from simcore.game.ledger import apply_resource_delta
 from simcore.models import Army, City
+from simcore.world import bump_world_version
 
 
 def produced_amount(rate_per_hour: int, elapsed_seconds: int) -> int:
@@ -85,3 +86,4 @@ def accrue_city(session: Session, city: City, now: datetime, *, source_event_id:
                 )
     city.last_updated = now
     session.flush()
+    bump_world_version(session)

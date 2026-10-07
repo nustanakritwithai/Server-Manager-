@@ -65,7 +65,16 @@ class OffsetClock:
         state = self.session.get(WorldState, 1, with_for_update=True)
         if state is None:
             raise RuntimeError("world_state row is missing; run migrations")
+        if not state.commands_open or state.worker_paused:
+            from simcore.errors import GameError
+
+            raise GameError(
+                "world is in maintenance; the clock cannot advance",
+                status_code=409,
+                code="maintenance",
+            )
         state.offset_seconds += delta
+        state.world_version = int(state.world_version) + 1
         self.session.flush()
         return self.now()
 

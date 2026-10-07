@@ -15,13 +15,16 @@ import threading
 import time
 from datetime import timedelta
 
+from sqlalchemy import text
+
 from simcore.clock import Clock, OffsetClock, SystemClock
 from simcore.config import get_settings
 from simcore.constants import EventStatus
 from simcore.db import get_sessionmaker
 from simcore.game.queue import claim_one
 from simcore.game.processor import process_event
-from simcore.models import Event
+from simcore.models import Event, WorldState
+from simcore.world import WORKER_DRAIN_LOCK
 
 logger = logging.getLogger("simcore.worker")
 
@@ -31,7 +34,11 @@ WORKER_ID = f"{socket.gethostname()}:{os.getpid()}"
 def run_once(base_clock: Clock | None = None) -> tuple[str, int | None]:
     """Claim and resolve a single due event.
 
-    Returns ("processed", id), ("failed", id), or ("empty", None).
+    Returns ("processed", id), ("failed", id), ("paused", None), or ("empty", None).
+
+    The shared drain lock is held for this transaction. Snapshot restore takes
+    the exclusive lock, so it waits for an in-flight event and then sees
+    worker_paused. Two workers can still hold the shared lock together.
     """
 
     base = base_clock or SystemClock()
@@ -39,6 +46,12 @@ def run_once(base_clock: Clock | None = None) -> tuple[str, int | None]:
     event_id: int | None = None
     try:
         with session.begin():
+            session.execute(text("SELECT pg_advisory_xact_lock_shared(:key)"), {"key": WORKER_DRAIN_LOCK})
+            state = session.get(WorldState, 1)
+            if state is None:
+                raise RuntimeError("world_state row is missing; run migrations")
+            if state.worker_paused:
+                return "paused", None
             clock = OffsetClock(session, base)
             event = claim_one(session, clock.now(), worker_id=WORKER_ID)
             if event is None:

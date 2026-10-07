@@ -6,7 +6,7 @@ The map is a flat plane of integer city coordinates. There is no fog of war, no 
 
 ## Time
 
-The simulation clock is wall time plus `world_state.offset_seconds`. Admin tools and tests add to that offset; they never rewrite stored timestamps. Every command and every event is stamped with this clock.
+The simulation clock is wall time plus `world_state.offset_seconds`. `world_version` is a monotonic counter that increases when the simulation changes. Admin tools and tests add to the offset; they do not rewrite stored timestamps. Snapshot restore is the exception: it replaces the stored world, including timestamps, with a captured copy (see `docs/SNAPSHOTS.md`). Every command and every event is stamped with this clock.
 
 The client should call `GET /v1/time`, compute `offset = server_time - local_now`, and count down with `arrive_at - (local_now + offset)`. The countdown is cosmetic. The battle, the loot, and the march home exist only after the worker has processed the matching event.
 
