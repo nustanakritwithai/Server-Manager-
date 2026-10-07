@@ -190,6 +190,7 @@ function Read-SimcoreEnv {
 
 function Write-SimcoreEnv {
     param([string]$Path, [hashtable]$Map)
+    if ($null -eq $Map) { throw "Refusing to write $Path because the env map is null." }
     $order = @(
         "SIMCORE_ENV",
         "SIMCORE_DATABASE_URL",
@@ -227,8 +228,9 @@ function Write-SimcoreEnv {
     if (-not (Test-Path -LiteralPath $directory)) {
         New-Item -ItemType Directory -Force -Path $directory | Out-Null
     }
-    # Write the whole file beside the destination, then replace it. A full disk
-    # throws while the temporary file is incomplete and the previous .env.prod stays.
+    # Write the whole file beside the destination, then move it into place.
+    # A full disk throws while the temporary file is incomplete and the previous .env.prod stays.
+    # Move-Item -Force replaces the destination without [NullString]::Value, which Windows PowerShell can reject.
     $temp = Join-Path $directory (".{0}.{1}.tmp" -f (Split-Path -Leaf $Path), ([guid]::NewGuid().ToString("N")))
     try {
         [System.IO.File]::WriteAllLines($temp, $lines.ToArray(), $utf8)
@@ -236,11 +238,7 @@ function Write-SimcoreEnv {
         if ([string]::IsNullOrWhiteSpace($written)) {
             throw "Refusing to replace $Path with an empty file."
         }
-        if (Test-Path -LiteralPath $Path) {
-            [System.IO.File]::Replace($temp, $Path, [NullString]::Value)
-        } else {
-            [System.IO.File]::Move($temp, $Path)
-        }
+        Move-Item -LiteralPath $temp -Destination $Path -Force
     } catch {
         if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }
         if ($_.Exception.Message -match "not enough space|enough space on the disk|disk full|No space left") {
@@ -505,22 +503,31 @@ function Set-PostgresListenLocalhost {
     [System.IO.File]::WriteAllLines($conf, $lines, $utf8)
 }
 
+function Test-SimcoreFirewallMatchesPort {
+    param($Filter, $Port)
+    if ($null -eq $Filter) { return $false }
+    $localPort = $Filter.LocalPort
+    if ($null -eq $localPort) { return $false }
+    $ports = @($localPort)
+    return ($ports -contains $Port -or $ports -contains "$Port")
+}
+
 function Disable-PublicPostgres {
-    $named = Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object {
+    $named = @(Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object {
         $_.DisplayName -match 'PostgreSQL|postgres'
-    }
+    })
     foreach ($rule in $named) {
+        if ($null -eq $rule -or [string]::IsNullOrWhiteSpace([string]$rule.Name)) { continue }
         Disable-NetFirewallRule -Name $rule.Name
         Write-Host "Disabled firewall rule: $($rule.DisplayName)"
     }
-    $inbound = Get-NetFirewallRule -Direction Inbound -Action Allow -ErrorAction SilentlyContinue
+    $inbound = @(Get-NetFirewallRule -Direction Inbound -Action Allow -ErrorAction SilentlyContinue)
     foreach ($rule in $inbound) {
+        if ($null -eq $rule -or [string]::IsNullOrWhiteSpace([string]$rule.Name)) { continue }
         $filter = $rule | Get-NetFirewallPortFilter -ErrorAction SilentlyContinue
-        $ports = @($filter.LocalPort)
-        if ($ports -contains 5432 -or $ports -contains "5432") {
-            Disable-NetFirewallRule -Name $rule.Name
-            Write-Host "Disabled inbound 5432 rule: $($rule.DisplayName)"
-        }
+        if (-not (Test-SimcoreFirewallMatchesPort -Filter $filter -Port 5432)) { continue }
+        Disable-NetFirewallRule -Name $rule.Name
+        Write-Host "Disabled inbound 5432 rule: $($rule.DisplayName)"
     }
 }
 
@@ -561,6 +568,12 @@ function Assert-PostgresLocalOnly {
             throw "PostgreSQL is listening on ${address}:5432. It must stay on localhost."
         }
     }
+}
+
+function Convert-SimcoreCommandText {
+    param($Value)
+    # An empty native command emits no object. Casting that to [string] stays $null, and .Trim() then throws.
+    return ("" + $Value).Trim()
 }
 
 function Invoke-Psql {
@@ -607,14 +620,14 @@ function Initialize-SimcoreDatabase {
         }
     }
     $env:PGPASSWORD = $super
-    $role = [string](Invoke-Psql -Psql $Psql -Command "SELECT 1 FROM pg_roles WHERE rolname = 'simcore'")
-    if ($role.Trim() -eq "1") {
+    $role = Convert-SimcoreCommandText (Invoke-Psql -Psql $Psql -Command "SELECT 1 FROM pg_roles WHERE rolname = 'simcore'")
+    if ($role -eq "1") {
         Invoke-Psql -Psql $Psql -Command "ALTER ROLE simcore WITH LOGIN PASSWORD :'simpass';" -Variables @{ simpass = $dbPass } | Out-Null
     } else {
         Invoke-Psql -Psql $Psql -Command "CREATE ROLE simcore LOGIN PASSWORD :'simpass';" -Variables @{ simpass = $dbPass } | Out-Null
     }
-    $db = [string](Invoke-Psql -Psql $Psql -Command "SELECT 1 FROM pg_database WHERE datname = 'simcore'")
-    if ($db -notmatch "1") {
+    $db = Convert-SimcoreCommandText (Invoke-Psql -Psql $Psql -Command "SELECT 1 FROM pg_database WHERE datname = 'simcore'")
+    if ([string]::IsNullOrWhiteSpace($db) -or $db -notmatch "1") {
         Invoke-Psql -Psql $Psql -Command "CREATE DATABASE simcore OWNER simcore;" | Out-Null
     }
     Invoke-Psql -Psql $Psql -Database "simcore" -Command "ALTER SCHEMA public OWNER TO simcore;" | Out-Null
@@ -670,7 +683,45 @@ $dependXml  <logpath>$([System.Security.SecurityElement]::Escape($LogDir))</logp
 </service>
 "@
     $utf8 = New-Object System.Text.UTF8Encoding $false
-    [System.IO.File]::WriteAllText($XmlPath, $xml.Trim() + "`r`n", $utf8)
+    $text = ("" + $xml).Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) { throw "Refusing to write an empty WinSW service file for $Id." }
+    [System.IO.File]::WriteAllText($XmlPath, $text + "`r`n", $utf8)
+}
+
+function Write-SimcoreFailure {
+    param([string]$Context, $ErrorRecord)
+    Write-Host "$Context failed."
+    if ($null -eq $ErrorRecord) { return }
+    $exception = $ErrorRecord.Exception
+    if ($null -ne $exception) {
+        Write-Host ("Exception: " + $exception.GetType().FullName)
+        Write-Host $exception.Message
+    }
+    $info = $ErrorRecord.InvocationInfo
+    if ($null -ne $info -and $info.PositionMessage) {
+        Write-Host $info.PositionMessage
+    }
+    if ($ErrorRecord.ScriptStackTrace) {
+        Write-Host $ErrorRecord.ScriptStackTrace
+    }
+}
+
+function Assert-SimcoreServiceExecutable {
+    param($Path, [string]$Name)
+    $text = [string]$Path
+    if ([string]::IsNullOrWhiteSpace($text) -or -not (Test-Path -LiteralPath $text)) {
+        throw "$Name was not found at $text."
+    }
+}
+
+function Assert-SimcoreServiceSpec {
+    param($Spec)
+    if ($null -eq $Spec) { throw "A Windows service spec was empty." }
+    foreach ($field in @("Id", "Name", "Description", "Executable", "Arguments")) {
+        if ([string]::IsNullOrWhiteSpace([string]$Spec.$field)) {
+            throw "Windows service spec is missing $field."
+        }
+    }
 }
 
 function Install-SimcoreWindowsServices {
@@ -680,67 +731,88 @@ function Install-SimcoreWindowsServices {
         [hashtable]$EnvMap,
         [switch]$Reinstall
     )
-    $winsw = Ensure-WinSW -InstallRoot $InstallRoot
-    $caddy = Join-Path $InstallRoot "tools\caddy.exe"
-    $python = Join-Path $RepoRoot ".venv\Scripts\python.exe"
-    $port = $EnvMap["API_PORT"]
-    if (-not $port) { $port = "8741" }
-    $layout = Find-PostgresLayout
-    $depend = ""
-    if ($layout -and $layout.ServiceName) { $depend = $layout.ServiceName }
-    $logDir = Join-Path $InstallRoot "logs"
-    $caddyFile = Join-Path $InstallRoot "Caddyfile"
-    $servicesDir = Join-Path $InstallRoot "services"
-    New-Item -ItemType Directory -Force -Path $servicesDir, $logDir | Out-Null
+    try {
+        if ([string]::IsNullOrWhiteSpace($RepoRoot)) { throw "Repo root is empty. Cannot install Windows services." }
+        if ([string]::IsNullOrWhiteSpace($InstallRoot)) { throw "Install root is empty. Cannot install Windows services." }
+        if ($null -eq $EnvMap) { throw "Production env map is empty. Cannot install Windows services." }
+        $winsw = Ensure-WinSW -InstallRoot $InstallRoot
+        Assert-SimcoreServiceExecutable -Path $winsw -Name "WinSW.NET4.exe"
+        $caddy = Join-Path $InstallRoot "tools\caddy.exe"
+        Assert-SimcoreServiceExecutable -Path $caddy -Name "caddy.exe"
+        $python = Join-Path $RepoRoot ".venv\Scripts\python.exe"
+        Assert-SimcoreServiceExecutable -Path $python -Name "Python virtualenv"
+        $port = [string]$EnvMap["API_PORT"]
+        if ([string]::IsNullOrWhiteSpace($port)) { $port = "8741" }
+        $layout = Find-PostgresLayout
+        $depend = ""
+        if ($null -ne $layout -and -not [string]::IsNullOrWhiteSpace([string]$layout.ServiceName)) {
+            $depend = [string]$layout.ServiceName
+        }
+        $logDir = Join-Path $InstallRoot "logs"
+        $caddyFile = Join-Path $InstallRoot "Caddyfile"
+        $servicesDir = Join-Path $InstallRoot "services"
+        New-Item -ItemType Directory -Force -Path $servicesDir, $logDir | Out-Null
 
-    $specs = @(
-        @{
-            Id = "simcore-api"
-            Name = "Simcore API"
-            Description = "Strategy game simulation API (localhost only; Caddy publishes HTTPS)"
-            Executable = $python
-            Arguments = "-m uvicorn simcore.main:app --host 127.0.0.1 --port $port"
-            Depend = $depend
-        },
-        @{
-            Id = "simcore-worker"
-            Name = "Simcore Worker"
-            Description = "Claims due world events with SKIP LOCKED"
-            Executable = $python
-            Arguments = "-m simcore.worker"
-            Depend = $depend
-        },
-        @{
-            Id = "simcore-caddy"
-            Name = "Simcore Caddy"
-            Description = "HTTPS reverse proxy and Let's Encrypt for the game API"
-            Executable = $caddy
-            Arguments = "run --config " + ($caddyFile -replace '\\', '/')
-            Depend = ""
-        }
-    )
+        $specs = @(
+            @{
+                Id = "simcore-api"
+                Name = "Simcore API"
+                Description = "Strategy game simulation API (localhost only; Caddy publishes HTTPS)"
+                Executable = $python
+                Arguments = "-m uvicorn simcore.main:app --host 127.0.0.1 --port $port"
+                Depend = $depend
+            },
+            @{
+                Id = "simcore-worker"
+                Name = "Simcore Worker"
+                Description = "Claims due world events with SKIP LOCKED"
+                Executable = $python
+                Arguments = "-m simcore.worker"
+                Depend = $depend
+            },
+            @{
+                Id = "simcore-caddy"
+                Name = "Simcore Caddy"
+                Description = "HTTPS reverse proxy and Let's Encrypt for the game API"
+                Executable = $caddy
+                Arguments = "run --config " + ($caddyFile -replace '\\', '/')
+                Depend = ""
+            }
+        )
 
-    foreach ($spec in $specs) {
-        $exe = Join-Path $servicesDir "$($spec.Id).exe"
-        $xml = Join-Path $servicesDir "$($spec.Id).xml"
-        $installed = Get-Service -Name $spec.Id -ErrorAction SilentlyContinue
-        if ($installed -and $installed.Status -ne "Stopped") {
-            Stop-Service -Name $spec.Id -Force
+        foreach ($spec in $specs) {
+            Assert-SimcoreServiceSpec $spec
+            $id = [string]$spec.Id
+            Write-Host "Installing Windows service $id"
+            $exe = Join-Path $servicesDir "$id.exe"
+            $xml = Join-Path $servicesDir "$id.xml"
+            $installed = Get-Service -Name $id -ErrorAction SilentlyContinue
+            if ($null -ne $installed) {
+                $status = [string]$installed.Status
+                if ($status -ne "Stopped") {
+                    Stop-Service -Name $id -Force
+                }
+            }
+            if ($null -ne $installed -and $Reinstall -and (Test-Path -LiteralPath $exe)) {
+                & $exe uninstall | Out-Null
+                Start-Sleep -Seconds 1
+                $installed = $null
+            }
+            $dependOn = ""
+            if (-not [string]::IsNullOrWhiteSpace([string]$spec.Depend)) { $dependOn = [string]$spec.Depend }
+            Write-WinSwServiceXml -XmlPath $xml -Id $id -DisplayName ([string]$spec.Name) -Description ([string]$spec.Description) `
+                -Executable ([string]$spec.Executable) -Arguments ([string]$spec.Arguments) -WorkingDirectory $RepoRoot `
+                -LogDir $logDir -Depend $dependOn
+            Copy-Item -LiteralPath ([string]$winsw) -Destination $exe -Force
+            if ($null -eq $installed) {
+                & $exe install
+                if ($LASTEXITCODE -ne 0) { throw "Could not install Windows service $id" }
+                & sc.exe @("failure", $id, "reset=", "86400", "actions=", "restart/5000/restart/15000/restart/30000") | Out-Null
+            }
         }
-        if ($installed -and $Reinstall -and (Test-Path $exe)) {
-            & $exe uninstall | Out-Null
-            Start-Sleep -Seconds 1
-            $installed = $null
-        }
-        Write-WinSwServiceXml -XmlPath $xml -Id $spec.Id -DisplayName $spec.Name -Description $spec.Description `
-            -Executable $spec.Executable -Arguments $spec.Arguments -WorkingDirectory $RepoRoot `
-            -LogDir $logDir -Depend $spec.Depend
-        Copy-Item $winsw $exe -Force
-        if (-not $installed) {
-            & $exe install
-            if ($LASTEXITCODE -ne 0) { throw "Could not install Windows service $($spec.Id)" }
-            & sc.exe @("failure", $spec.Id, "reset=", "86400", "actions=", "restart/5000/restart/15000/restart/30000") | Out-Null
-        }
+    } catch {
+        Write-SimcoreFailure -Context "Install-SimcoreWindowsServices" -ErrorRecord $_
+        throw
     }
 }
 
@@ -964,6 +1036,31 @@ function New-SimcoreProductionEnv {
         }
     }
     return $completed.Map
+}
+
+function Clear-SimcoreInstallerCache {
+    param([string]$TempRoot)
+    if ([string]::IsNullOrWhiteSpace($TempRoot)) { return }
+    if (-not (Test-Path -LiteralPath $TempRoot)) { return }
+    $children = @(Get-ChildItem -LiteralPath $TempRoot -Force -ErrorAction SilentlyContinue)
+    foreach ($child in $children) {
+        if ($null -eq $child) { continue }
+        $name = [string]$child.Name
+        $matchesCache = (
+            $name -like "postgresql*.exe*" -or
+            $name -like "python*.exe*" -or
+            $name -like "caddy*" -or
+            $name -like "WinSW*" -or
+            $name -like "*.partial"
+        )
+        if (-not $matchesCache) { continue }
+        try {
+            Remove-Item -LiteralPath $child.FullName -Force -Recurse -ErrorAction Stop
+            Write-Host "Removed leftover installer cache $($child.FullName)"
+        } catch {
+            Write-Host "Could not remove leftover installer cache $($child.FullName): $($_.Exception.Message)"
+        }
+    }
 }
 
 function Format-SimcoreGigabytes {
