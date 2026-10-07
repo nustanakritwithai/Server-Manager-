@@ -1,8 +1,10 @@
 """Read-only trace timeline and server-side integrity verdict.
 
 The browser displays this document. It does not decide PASS, FAIL, or
-INCOMPLETE. Production and upkeep are not part of a command trace; that check
-is reported as NOT CHECKED.
+INCOMPLETE. Production and upkeep are scored when this trace has accrual
+ledger rows whose idempotency keys record the rate, the elapsed window, and
+(for upkeep) the garrison composition. A trace with no such rows stays
+NOT CHECKED. NOT CHECKED is never reported as PASS.
 """
 
 from __future__ import annotations
@@ -20,9 +22,12 @@ from simcore.constants import (
     EventType,
     Mission,
     MovementStatus,
+    Reason,
 )
 from simcore.errors import GameError
-from simcore.models import Army, BattleReport, Event, Movement, Player, PlayerCommand, Transaction
+from simcore.game.catalog import FOUND_CITY_COST, UNIT_CATALOG, UNIT_TRAINING
+from simcore.game.economy import produced_amount
+from simcore.models import Army, BattleReport, City, Event, Movement, Player, PlayerCommand, Transaction
 
 PASS = "PASS"
 FAIL = "FAIL"
@@ -32,7 +37,9 @@ LEGACY = "LEGACY"
 NOT_TRACED = "NOT TRACED"
 
 _OPEN_EVENT = frozenset({EventStatus.PENDING, EventStatus.PROCESSING})
-_MARCH_COMMANDS = frozenset({"attack", "move", "recall"})
+_MARCH_COMMANDS = frozenset({"attack", "move", "recall", "garrison"})
+_LOOT_REASONS = frozenset({Reason.LOOT_LOST, Reason.LOOT_GAINED})
+_ACCRUAL_REASONS = frozenset({Reason.PRODUCTION, Reason.UPKEEP})
 
 
 def _not_found(kind: str) -> GameError:
@@ -131,6 +138,8 @@ def _ledger_check(
     the report. A gap in the ledger is not rewritten into a loss.
     """
 
+    all_transactions = transactions
+    transactions = [row for row in transactions if row.reason in _LOOT_REASONS]
     outgoing, incoming = _resource_sums(transactions)
     observed = _report_loot(reports)
     open_move = any(row.status == MovementStatus.IN_PROGRESS for row in movements)
@@ -178,6 +187,10 @@ def _ledger_check(
                 fail.append(f"{name}: recorded losses {recorded[name]} but ledger in is {incoming[name]}")
             if returns_done and carried[name] != incoming[name]:
                 fail.append(f"{name}: return movement loot {carried[name]} != ledger in {incoming[name]}")
+
+    spend_fail, spend_incomplete = _spend_transfer_check(command, events, all_transactions)
+    fail.extend(spend_fail)
+    incomplete.extend(spend_incomplete)
 
     resources: dict[str, dict[str, int | None]] = {}
     for name in RESOURCES:
@@ -227,6 +240,8 @@ def _missing_links(
             fail.append(f"battle report {report.id} movement_id {report.movement_id} is not in this trace")
     for row in transactions:
         if row.source_event_id is None:
+            if row.reason in _ACCRUAL_REASONS:
+                continue
             fail.append(f"transaction {row.id} has no source event (orphan)")
         elif row.source_event_id not in event_ids:
             fail.append(
@@ -245,6 +260,19 @@ def _missing_links(
                 fail.append(f"event {event.id} completed with {len(effects)} effect transactions")
             elif event.status == EventStatus.FAILED:
                 fail.append(f"event {event.id} failed")
+    if command is not None and command.command_type == "train_units":
+        for event in events:
+            if event.type != EventType.TRAIN_COMPLETE:
+                continue
+            effects = [
+                row
+                for row in transactions
+                if row.source_event_id == event.id and row.reason == "train_units"
+            ]
+            if event.status in _OPEN_EVENT:
+                incomplete.append(f"event {event.id} is {event.status}; trained units are not in the world yet")
+            elif event.status == EventStatus.COMPLETED and len(effects) != 1:
+                fail.append(f"event {event.id} completed with {len(effects)} train_units effect rows")
     return _check("missing_links", fail, incomplete)
 
 
@@ -256,11 +284,11 @@ def _duplicate_processing(
     fail: list[str] = []
     grouped: dict[tuple[int | None, str, str], list[int]] = {}
     for row in transactions:
-        grouped.setdefault((row.source_event_id, row.resource, row.reason), []).append(row.id)
-    for (event_id, resource, reason), ids in grouped.items():
+        grouped.setdefault((row.source_event_id, row.city_id, row.resource, row.reason), []).append(row.id)
+    for (event_id, city_id, resource, reason), ids in grouped.items():
         if len(ids) > 1:
             fail.append(
-                f"event {event_id} resource {resource} reason {reason} has {len(ids)} "
+                f"event {event_id} city {city_id} resource {resource} reason {reason} has {len(ids)} "
                 f"ledger rows {ids}; processed more than once"
             )
     by_movement: dict[tuple[int | None, str], list[int]] = {}
@@ -330,9 +358,9 @@ def _army_resolution(
                 f"army {movement.army_id} departed on movement {movement.id} "
                 "and did not return, die, or arrive"
             )
-    elif command.command_type == "move":
+    elif command.command_type in {"move", "garrison"}:
         if not movements:
-            fail.append("move command has no movement")
+            fail.append(f"{command.command_type} command has no movement")
         for movement in movements:
             if movement.status != MovementStatus.COMPLETED:
                 continue
@@ -342,7 +370,16 @@ def _army_resolution(
                 and army.status == ArmyStatus.GARRISONED
                 and army.location_city_id == movement.destination_city_id
             )
-            if not arrived and not _army_destroyed(army):
+            # A later command may march the army away. Arrival still happened if
+            # that later leg starts at this destination.
+            left_after_arrival = session.scalar(
+                select(Movement.id).where(
+                    Movement.army_id == movement.army_id,
+                    Movement.id > movement.id,
+                    Movement.origin_city_id == movement.destination_city_id,
+                )
+            )
+            if not arrived and not _army_destroyed(army) and left_after_arrival is None:
                 fail.append(f"army {movement.army_id} movement {movement.id} completed without arriving")
     elif command.command_type == "recall":
         if not movements:
@@ -563,17 +600,246 @@ def _command_body(command: PlayerCommand | None) -> dict[str, object] | None:
     }
 
 
-def _not_checked() -> list[dict[str, object]]:
-    return [
-        {
+def _parse_stamp(stamp: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(stamp)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _accrual_elapsed(stamp: str, created_at: datetime) -> int | None:
+    start = _parse_stamp(stamp)
+    if start is None:
+        return None
+    end = created_at if created_at.tzinfo is not None else created_at.replace(tzinfo=timezone.utc)
+    return int((end - start).total_seconds())
+
+
+def _split_accrue(key: str) -> dict[str, object] | None:
+    """Parse an accrue idempotency key. The stamp itself contains colons."""
+
+    if not key.startswith("accrue:"):
+        return None
+    if ":production" in key:
+        head, _, tail = key.partition(":production")
+        parts = head.split(":", 3)
+        if len(parts) != 4:
+            return None
+        _prefix, city, resource, stamp = parts
+        rate = None
+        if tail.startswith(":") and tail[1:].isdigit():
+            rate = int(tail[1:])
+        return {
+            "kind": "production",
+            "city_id": int(city),
+            "resource": resource,
+            "stamp": stamp,
+            "rate": rate,
+        }
+    if ":upkeep" in key:
+        head, _, tail = key.partition(":upkeep")
+        parts = head.split(":", 3)
+        if len(parts) != 4:
+            return None
+        _prefix, city, resource, stamp = parts
+        hourly = None
+        composition = None
+        if tail.startswith(":"):
+            hourly_text, separator, composition = tail[1:].partition(":")
+            if hourly_text.isdigit():
+                hourly = int(hourly_text)
+            if not separator:
+                composition = None
+        return {
+            "kind": "upkeep",
+            "city_id": int(city),
+            "resource": resource,
+            "stamp": stamp,
+            "hourly": hourly,
+            "composition": composition,
+        }
+    return None
+
+
+def _hourly_from_composition(composition: str) -> int | None:
+    if composition == "":
+        return 0
+    total = 0
+    for part in composition.split("+"):
+        name, separator, count_text = part.partition("*")
+        if not separator or name not in UNIT_CATALOG or not count_text.isdigit():
+            return None
+        total += UNIT_CATALOG[name].upkeep * int(count_text)
+    return total
+
+
+def _production_upkeep_check(session: Session, transactions: list[Transaction]) -> dict[str, object]:
+    """Score accrual rows on this trace. No rows means the check was not run."""
+
+    rows = [row for row in transactions if row.reason in _ACCRUAL_REASONS]
+    if not rows:
+        return {
             "name": "production_upkeep",
             "status": NOT_CHECKED,
+            "reasons": [],
             "detail": (
-                "City production and upkeep are not stamped with the command trace_id. "
-                "This trace does not treat them as command transfers and does not score them."
+                "This trace has no production or upkeep ledger rows, so those formulas were not scored. "
+                "This is not PASS."
             ),
         }
-    ]
+    fail: list[str] = []
+    unverified: list[str] = []
+    for row in rows:
+        parsed = _split_accrue(row.idempotency_key)
+        if parsed is None:
+            unverified.append(
+                f"transaction {row.id} is {row.reason} but its idempotency key does not record an accrue window"
+            )
+            continue
+        elapsed = _accrual_elapsed(str(parsed["stamp"]), row.created_at)
+        if elapsed is None or elapsed < 0:
+            unverified.append(f"transaction {row.id} accrue window could not be read")
+            continue
+        if parsed["kind"] == "production":
+            rate = parsed["rate"]
+            city = session.get(City, int(parsed["city_id"]))
+            column = f"{row.resource}_rate"
+            if not isinstance(rate, int):
+                if city is None or not hasattr(city, column):
+                    unverified.append(
+                        f"transaction {row.id} production row has no stored rate and the city rate is unavailable"
+                    )
+                    continue
+                rate = int(getattr(city, column))
+            elif city is not None and hasattr(city, column) and int(getattr(city, column)) != rate:
+                fail.append(
+                    f"transaction {row.id} stored {row.resource} rate {rate} != city {column} {getattr(city, column)}"
+                )
+            expected = produced_amount(rate, elapsed)
+            if row.delta != expected:
+                fail.append(
+                    f"transaction {row.id} production {row.resource} delta {row.delta} "
+                    f"!= {rate} per hour * {elapsed}s // 3600 = {expected}"
+                )
+            if row.resource != parsed["resource"]:
+                fail.append(f"transaction {row.id} resource {row.resource} != key resource {parsed['resource']}")
+            continue
+        if row.resource != "food":
+            fail.append(f"transaction {row.id} upkeep is on {row.resource}, not food")
+            continue
+        hourly = parsed["hourly"]
+        composition = parsed["composition"]
+        if not isinstance(hourly, int) or not isinstance(composition, str):
+            unverified.append(
+                f"transaction {row.id} upkeep row does not record the garrison composition, "
+                "so the hourly rate cannot be recomputed from the unit catalog"
+            )
+            continue
+        recomputed = _hourly_from_composition(composition)
+        if recomputed is None:
+            unverified.append(f"transaction {row.id} garrison composition {composition!r} is not in the unit catalog")
+            continue
+        if recomputed != hourly:
+            fail.append(
+                f"transaction {row.id} upkeep hourly {hourly} != catalog upkeep {recomputed} of {composition}"
+            )
+        expected = produced_amount(hourly, elapsed)
+        if row.delta != -expected:
+            fail.append(
+                f"transaction {row.id} upkeep delta {row.delta} "
+                f"!= -({hourly} per hour * {elapsed}s // 3600 = {expected})"
+            )
+    if fail:
+        return _check("production_upkeep", fail, [])
+    if unverified:
+        return {
+            "name": "production_upkeep",
+            "status": NOT_CHECKED,
+            "reasons": [],
+            "detail": " ".join(unverified) + " This is not PASS.",
+        }
+    return _check(
+        "production_upkeep",
+        [],
+        [],
+        detail=f"{len(rows)} production and upkeep rows match the stored rate, window, and catalog",
+    )
+
+
+def _spend_transfer_check(
+    command: PlayerCommand | None,
+    events: list[Event],
+    transactions: list[Transaction],
+) -> tuple[list[str], list[str]]:
+    """Training and founding consume resources. Transfers move them between own cities."""
+
+    if command is None:
+        return [], []
+    fail: list[str] = []
+    incomplete: list[str] = []
+    kind = command.command_type
+    if kind == "train_units":
+        unit_type = str((command.target or {}).get("unit_type") or "")
+        count = int((command.target or {}).get("count") or 0)
+        spec = UNIT_TRAINING.get(unit_type)
+        if spec is None or count < 1:
+            fail.append("train command target is not a catalog unit and a positive count")
+            return fail, incomplete
+        expected = {name: int(getattr(spec, name)) * count for name in RESOURCES}
+        got = {name: 0 for name in RESOURCES}
+        for row in transactions:
+            if row.reason != Reason.TRAIN or row.resource not in got:
+                continue
+            if row.delta > 0:
+                fail.append(f"train transaction {row.id} has a positive delta")
+            got[row.resource] += -int(row.delta)
+        for name in RESOURCES:
+            if got[name] != expected[name]:
+                fail.append(f"{name}: train spend {got[name]} != catalog cost {expected[name]}")
+    elif kind == "found_city":
+        got = {name: 0 for name in RESOURCES}
+        for row in transactions:
+            if row.reason != Reason.FOUND_CITY or row.resource not in got:
+                continue
+            if row.delta > 0:
+                fail.append(f"found_city transaction {row.id} has a positive delta")
+            got[row.resource] += -int(row.delta)
+        for name in RESOURCES:
+            if got[name] != int(FOUND_CITY_COST[name]):
+                fail.append(f"{name}: found_city spend {got[name]} != catalog cost {FOUND_CITY_COST[name]}")
+    elif kind == "transfer_resources":
+        target = command.target or {}
+        requested = {name: int(target.get(name) or 0) for name in RESOURCES}
+        outgoing = {name: 0 for name in RESOURCES}
+        incoming = {name: 0 for name in RESOURCES}
+        for row in transactions:
+            if row.resource not in outgoing:
+                continue
+            if row.reason == Reason.TRANSFER_OUT:
+                if row.delta > 0:
+                    fail.append(f"transfer_out transaction {row.id} has a positive delta")
+                outgoing[row.resource] += -int(row.delta)
+            elif row.reason == Reason.TRANSFER_IN:
+                if row.delta < 0:
+                    fail.append(f"transfer_in transaction {row.id} has a negative delta")
+                incoming[row.resource] += int(row.delta)
+        open_transfer = any(
+            row.type == EventType.TRANSFER_ARRIVE and row.status in _OPEN_EVENT for row in events
+        )
+        for name in RESOURCES:
+            if outgoing[name] != requested[name]:
+                fail.append(f"{name}: transfer out {outgoing[name]} != requested {requested[name]}")
+            if open_transfer:
+                if incoming[name] != 0:
+                    fail.append(f"{name}: transfer credited {incoming[name]} before arrival")
+            elif incoming[name] != outgoing[name]:
+                fail.append(f"{name}: transfer in {incoming[name]} != transfer out {outgoing[name]}")
+        if open_transfer and not fail:
+            incomplete.append("transfer has not arrived; conservation is not closed")
+    return fail, incomplete
 
 
 def _verdict(checks: list[dict[str, object]]) -> tuple[str, list[str]]:
@@ -616,8 +882,19 @@ def build_trace(session: Session, trace_id: str) -> dict[str, object]:
         ),
         _duplicate_processing(events, reports, transactions),
         _army_resolution(session, command=command, movements=movements, events=events, reports=reports),
+        _production_upkeep_check(session, transactions),
     ]
     verdict, reasons = _verdict(checks)
+    not_checked = [
+        {
+            "name": check["name"],
+            "status": NOT_CHECKED,
+            "detail": check.get("detail")
+            or "This check was not run. This is not PASS.",
+        }
+        for check in checks
+        if check["status"] == NOT_CHECKED
+    ]
     return {
         "trace_id": trace_id,
         "verdict": verdict,
@@ -626,7 +903,7 @@ def build_trace(session: Session, trace_id: str) -> dict[str, object]:
             "verdict": verdict,
             "reasons": reasons,
             "checks": checks,
-            "not_checked": _not_checked(),
+            "not_checked": not_checked,
         },
         "command": _command_body(command),
         "steps": _steps(command, movements, events, reports, transactions),

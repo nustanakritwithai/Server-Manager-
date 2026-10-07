@@ -23,7 +23,7 @@ The manifest records the time, dump size, database name, alembic revision, git c
 
 ## Disk space
 
-The VPS C: drive has about 2 GB free. The backup script reads `pg_database_size`, multiplies by 1.5, and refuses to dump if the free space left after that estimate would be under 1 GB. It does not delete older local dumps to make room. Those dumps are deleted only after a newer dump has been checked with `pg_restore --list` and the upload has been checked with rclone.
+The VPS C: drive has about 2.26 GB free. The backup script reads `pg_database_size`, multiplies by 1.5, and refuses to dump if the free space left after that estimate would be under 1 GB. It does not delete older local dumps to make room. Those dumps are deleted only after a newer dump has been checked with `pg_restore --list` and the upload has been checked with rclone.
 
 A restore into a second database needs about one extra copy of the database, plus the 1 GB floor. Replacing the live database also takes a fresh safety backup first, so it needs room for that dump and the second copy. If the check fails, nothing is overwritten.
 
@@ -196,7 +196,7 @@ manifest เก็บเวลา ขนาดไฟล์ ชื่อฐาน
 
 ## พื้นที่ดิสก์
 
-ไดรฟ์ C: ของ VPS ว่างประมาณ 2 GB สคริปต์อ่าน `pg_database_size` คูณ 1.5 แล้วปฏิเสธการดัมป์ถ้าพื้นที่ว่างที่เหลือหลังขนาดที่ประมาณไว้นั้นต่ำกว่า 1 GB สคริปต์ไม่ลบดัมป์เก่าในเครื่องเพื่อทำที่ว่าง ดัมป์เก่าถูกลบเมื่อดัมป์ใหม่ผ่าน `pg_restore --list` และอัปโหลดผ่านการตรวจของ rclone แล้วเท่านั้น
+ไดรฟ์ C: ของ VPS ว่างประมาณ 2.26 GB สคริปต์อ่าน `pg_database_size` คูณ 1.5 แล้วปฏิเสธการดัมป์ถ้าพื้นที่ว่างที่เหลือหลังขนาดที่ประมาณไว้นั้นต่ำกว่า 1 GB สคริปต์ไม่ลบดัมป์เก่าในเครื่องเพื่อทำที่ว่าง ดัมป์เก่าถูกลบเมื่อดัมป์ใหม่ผ่าน `pg_restore --list` และอัปโหลดผ่านการตรวจของ rclone แล้วเท่านั้น
 
 การกู้ลงฐานข้อมูลที่สองต้องมีที่ว่างประมาณอีกหนึ่งเท่าของฐานข้อมูล และยังต้องเหลืออย่างน้อย 1 GB การเขียนทับฐานข้อมูลจริงจะสำรองความปลอดภัยรอบใหม่ก่อน ดังนั้นต้องมีที่ทั้งสำหรับดัมป์นั้นและสำหรับสำเนาที่สอง ถ้าการตรวจพื้นที่ไม่ผ่าน จะไม่มีการเขียนทับ
 

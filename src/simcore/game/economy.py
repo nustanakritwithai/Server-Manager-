@@ -30,14 +30,65 @@ def army_upkeep_per_hour(units: list[dict[str, int | str]]) -> int:
     return total
 
 
-def city_food_upkeep_per_hour(session: Session, city_id: int) -> int:
+def garrison_snapshot(session: Session, city_id: int) -> tuple[int, str]:
+    """Hourly food upkeep and the garrison composition that produced it.
+
+    Composition is ``type*count`` joined with ``+``, unit names sorted. It is
+    stored on the upkeep ledger key because army rows change after the accrue
+    and there is no garrison history table.
+    """
+
     armies = session.scalars(
-        select(Army).where(Army.location_city_id == city_id, Army.status == ArmyStatus.GARRISONED)
+        select(Army)
+        .where(Army.location_city_id == city_id, Army.status == ArmyStatus.GARRISONED)
+        .order_by(Army.id)
     ).all()
-    return sum(army_upkeep_per_hour(army.units) for army in armies)
+    totals: dict[str, int] = {}
+    for army in armies:
+        for stack in army.units or []:
+            unit_type = str(stack["type"])
+            count = int(stack["count"])
+            if count > 0 and unit_type in UNIT_CATALOG:
+                totals[unit_type] = totals.get(unit_type, 0) + count
+    hourly = sum(UNIT_CATALOG[name].upkeep * count for name, count in totals.items())
+    composition = "+".join(f"{name}*{totals[name]}" for name in sorted(totals))
+    return hourly, composition
 
 
-def accrue_city(session: Session, city: City, now: datetime, *, source_event_id: int | None = None) -> None:
+def city_food_upkeep_per_hour(session: Session, city_id: int) -> int:
+    hourly, _composition = garrison_snapshot(session, city_id)
+    return hourly
+
+
+def stock_after_accrual(session: Session, city: City, now: datetime) -> dict[str, int]:
+    """Balances accrue_city would leave, without writing.
+
+    Callers use this to reject a spend before any ledger row is inserted.
+    """
+
+    if city.last_updated > now:
+        elapsed = 0
+    else:
+        elapsed = int((now - city.last_updated).total_seconds())
+    upkeep = city_food_upkeep_per_hour(session, city.id) if elapsed > 0 else 0
+    stocks: dict[str, int] = {}
+    for resource in RESOURCES:
+        produced = produced_amount(int(getattr(city, f"{resource}_rate")), elapsed)
+        amount = int(getattr(city, resource)) + produced
+        if resource == "food" and upkeep:
+            amount -= produced_amount(upkeep, elapsed)
+        stocks[resource] = max(0, amount)
+    return stocks
+
+
+def accrue_city(
+    session: Session,
+    city: City,
+    now: datetime,
+    *,
+    source_event_id: int | None = None,
+    trace_id: str | None = None,
+) -> None:
     """Apply production and food upkeep since city.last_updated, then move the marker forward.
 
     Call this before changing the garrison so the elapsed window uses the garrison
@@ -51,7 +102,7 @@ def accrue_city(session: Session, city: City, now: datetime, *, source_event_id:
         return
 
     stamp = city.last_updated.isoformat()
-    upkeep = city_food_upkeep_per_hour(session, city.id)
+    upkeep, composition = garrison_snapshot(session, city.id)
     rates = {
         "wood": city.wood_rate,
         "food": city.food_rate,
@@ -67,9 +118,10 @@ def accrue_city(session: Session, city: City, now: datetime, *, source_event_id:
                 resource=resource,
                 delta=produced,
                 reason=Reason.PRODUCTION,
-                idempotency_key=f"accrue:{city.id}:{resource}:{stamp}:production",
+                idempotency_key=f"accrue:{city.id}:{resource}:{stamp}:production:{rates[resource]}",
                 source_event_id=source_event_id,
                 now=now,
+                trace_id=trace_id,
             )
         if resource == "food" and upkeep:
             consumed = produced_amount(upkeep, elapsed)
@@ -80,9 +132,10 @@ def accrue_city(session: Session, city: City, now: datetime, *, source_event_id:
                     resource="food",
                     delta=-consumed,
                     reason=Reason.UPKEEP,
-                    idempotency_key=f"accrue:{city.id}:food:{stamp}:upkeep",
+                    idempotency_key=f"accrue:{city.id}:food:{stamp}:upkeep:{upkeep}:{composition}",
                     source_event_id=source_event_id,
                     now=now,
+                    trace_id=trace_id,
                 )
     city.last_updated = now
     session.flush()

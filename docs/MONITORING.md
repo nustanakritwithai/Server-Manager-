@@ -106,9 +106,13 @@ If the probe fails, queue, heartbeat, and game checks that need the database are
 | `game.last_snapshot` | Latest `world_snapshots` row. UNKNOWN when the table has no row. WARN when that row is `CREATING`, `FAILED`, or `RESTORING`. A world snapshot is not a database backup |
 | `backup.last_success` | Age of `last_verified_at` in the status file written by `deploy/windows/backup.ps1` after a dump is verified off-site. Default file on Windows: `C:\simcore\backups\backup-status.json`. WARN when the age is greater than 26 hours, CRITICAL when it is greater than 50 hours. UNKNOWN when the file is missing, unreadable, or has never recorded a verified upload. UNKNOWN does not by itself change overall status |
 
+### Host
+
+`host.cpu` is `psutil.cpu_percent` over a 0.1 second blocking sample, so the first reading is a real measurement and not the 0.0 that a non-blocking call returns. `host.memory` is `psutil.virtual_memory().percent`. Both are percents, higher is worse. Defaults are CPU warn 90 / critical 98 and memory warn 85 / critical 95, so a saturated sample can be CRITICAL. Override them with `SIMCORE_MONITOR_CPU_WARN_PERCENT`, `SIMCORE_MONITOR_CPU_CRITICAL_PERCENT`, `SIMCORE_MONITOR_MEMORY_WARN_PERCENT`, and `SIMCORE_MONITOR_MEMORY_CRITICAL_PERCENT`. A sample at or above the critical setting is CRITICAL. If psutil raises or the number is not finite, the status is UNKNOWN, the value is null, and nothing is invented. The reading is cached for about a second so the dashboard and the monitoring report share it.
+
 ### Not measured
 
-`host.cpu` and `host.memory` are NOT INSTRUMENTED. `build.commit` is NOT INSTRUMENTED when `SIMCORE_GIT_COMMIT` is unset and `git rev-parse HEAD` does not return a SHA. The package version is still reported.
+`build.commit` is NOT INSTRUMENTED when `SIMCORE_GIT_COMMIT` is unset and `git rev-parse HEAD` does not return a SHA. The package version is still reported.
 
 ## History and retention
 
@@ -163,6 +167,10 @@ All of these are optional. Unset means the default. For every pair except disk f
 | `SIMCORE_MONITOR_DB_SIZE_CRITICAL_MB` | 40960 | database size |
 | `SIMCORE_MONITOR_DISK_FREE_WARN_MB` | 5120 | free bytes |
 | `SIMCORE_MONITOR_DISK_FREE_CRITICAL_MB` | 2048 | free bytes |
+| `SIMCORE_MONITOR_CPU_WARN_PERCENT` | 90 | host CPU percent |
+| `SIMCORE_MONITOR_CPU_CRITICAL_PERCENT` | 98 | host CPU percent |
+| `SIMCORE_MONITOR_MEMORY_WARN_PERCENT` | 85 | host memory percent |
+| `SIMCORE_MONITOR_MEMORY_CRITICAL_PERCENT` | 95 | host memory percent |
 | `SIMCORE_BACKUP_WARN_HOURS` | 26 | age of last verified off-site backup |
 | `SIMCORE_BACKUP_CRITICAL_HOURS` | 50 | age of last verified off-site backup |
 
@@ -223,4 +231,4 @@ This is the age of the last dump that `deploy/windows/backup.ps1` verified on Go
 
 ### NOT INSTRUMENTED
 
-CPU, memory, a commit SHA the process could not read, or a disk path that does not exist. Set `SIMCORE_GIT_COMMIT` if the service host has no `git` command and you want the SHA recorded. Set `SIMCORE_MONITOR_DISK_PATH` if the default drive is the wrong volume. Leaving them unset is valid; the UI shows NOT INSTRUMENTED rather than a guessed number.
+A commit SHA the process could not read, or a disk path that does not exist. Set `SIMCORE_GIT_COMMIT` if the service host has no `git` command and you want the SHA recorded. Set `SIMCORE_MONITOR_DISK_PATH` if the default drive is the wrong volume. Leaving them unset is valid; the UI shows NOT INSTRUMENTED rather than a guessed number. Host CPU and memory are measured. A failed measurement is UNKNOWN, not NOT INSTRUMENTED and not zero.

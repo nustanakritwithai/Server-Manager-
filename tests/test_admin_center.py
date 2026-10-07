@@ -204,8 +204,8 @@ def test_dashboard_counts_and_event_filter(client, frozen) -> None:
     assert body["events"]["failed"] == 0
     assert body["events"]["cancelled"] == 0
     assert body["latest_snapshot"] is None
-    assert body["uninstrumented"]["host_cpu"] == "NOT INSTRUMENTED"
-    assert body["uninstrumented"]["host_memory"] == "NOT INSTRUMENTED"
+    assert "host_cpu" not in body["uninstrumented"]
+    assert "host_memory" not in body["uninstrumented"]
     assert "worker_heartbeat" not in body["uninstrumented"]
     assert "host_disk" not in body["uninstrumented"]
     assert body["world"]["commands_open"] is True

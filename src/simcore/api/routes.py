@@ -11,7 +11,18 @@ from simcore.api.deps import get_clock, get_current_player, get_session
 from simcore.auth import DEV_AUTH_WARNING, issue_dev_token
 from simcore.clock import OffsetClock
 from simcore.errors import GameError
-from simcore.game.commands import attack_city, move_army, queue_build, queue_research, recall_army
+from simcore.constants import RESOURCES
+from simcore.game.commands import (
+    attack_city,
+    found_city,
+    garrison_army,
+    move_army,
+    queue_build,
+    queue_research,
+    recall_army,
+    train_units,
+    transfer_resources,
+)
 from simcore.game.economy import accrue_city
 from simcore.models import Army, BattleReport, City, Event, Player
 from simcore.present import army_body, city_body, movement_body, report_body
@@ -45,6 +56,34 @@ class BuildIn(BaseModel):
 
 class ResearchIn(BaseModel):
     tech: str = Field(min_length=1, max_length=40)
+
+
+class TrainIn(BaseModel):
+    city_id: int
+    unit_type: str = Field(min_length=1, max_length=40)
+    count: int = Field(ge=1, le=100)
+    army_id: int | None = None
+
+
+class FoundCityIn(BaseModel):
+    source_city_id: int
+    x: int
+    y: int
+    name: str = Field(min_length=1, max_length=40)
+
+
+class GarrisonIn(BaseModel):
+    army_id: int
+    city_id: int
+
+
+class TransferIn(BaseModel):
+    source_city_id: int
+    destination_city_id: int
+    wood: int = Field(default=0, ge=0)
+    food: int = Field(default=0, ge=0)
+    iron: int = Field(default=0, ge=0)
+    gold: int = Field(default=0, ge=0)
 
 
 def _require_city(session: Session, player: Player, city_id: int) -> City:
@@ -220,6 +259,71 @@ def command_research(
 ) -> dict[str, object]:
     event = queue_research(session, player, body.tech, clock.now())
     return _timed_event_body(event)
+
+
+@router.post("/commands/train", tags=["commands"])
+def command_train(
+    body: TrainIn,
+    player: Annotated[Player, Depends(get_current_player)],
+    session: Annotated[Session, Depends(get_session)],
+    clock: Annotated[OffsetClock, Depends(get_clock)],
+) -> dict[str, object]:
+    event = train_units(
+        session,
+        player,
+        body.city_id,
+        body.unit_type,
+        body.count,
+        clock.now(),
+        army_id=body.army_id,
+    )
+    return _timed_event_body(event)
+
+
+@router.post("/commands/found-city", tags=["commands"])
+def command_found_city(
+    body: FoundCityIn,
+    player: Annotated[Player, Depends(get_current_player)],
+    session: Annotated[Session, Depends(get_session)],
+    clock: Annotated[OffsetClock, Depends(get_clock)],
+) -> dict[str, object]:
+    city, event = found_city(session, player, body.source_city_id, body.x, body.y, body.name, clock.now())
+    payload = city_body(session, city, include_resources=True)
+    payload["event_id"] = event.id
+    payload["trace_id"] = event.trace_id
+    return payload
+
+
+@router.post("/commands/garrison", tags=["commands"])
+def command_garrison(
+    body: GarrisonIn,
+    player: Annotated[Player, Depends(get_current_player)],
+    session: Annotated[Session, Depends(get_session)],
+    clock: Annotated[OffsetClock, Depends(get_clock)],
+) -> dict[str, object]:
+    movement, event = garrison_army(session, player, body.army_id, body.city_id, clock.now())
+    return movement_body(movement, event)
+
+
+@router.post("/commands/transfer", tags=["commands"])
+def command_transfer(
+    body: TransferIn,
+    player: Annotated[Player, Depends(get_current_player)],
+    session: Annotated[Session, Depends(get_session)],
+    clock: Annotated[OffsetClock, Depends(get_clock)],
+) -> dict[str, object]:
+    amounts = {name: int(getattr(body, name)) for name in RESOURCES}
+    event = transfer_resources(
+        session,
+        player,
+        body.source_city_id,
+        body.destination_city_id,
+        amounts,
+        clock.now(),
+    )
+    payload = _timed_event_body(event)
+    payload["amounts"] = amounts
+    return payload
 
 
 def _timed_event_body(event: Event) -> dict[str, object]:

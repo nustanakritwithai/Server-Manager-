@@ -115,6 +115,14 @@ class Settings(BaseSettings):
     monitor_db_size_critical_mb: int = 40960
     monitor_disk_free_warn_mb: int = 5120
     monitor_disk_free_critical_mb: int = 2048
+    # Host percents are higher-is-worse. A saturated sample can reach these
+    # bars. A failed reading is UNKNOWN, not a fake zero.
+    # SIMCORE_MONITOR_CPU_WARN_PERCENT / SIMCORE_MONITOR_CPU_CRITICAL_PERCENT
+    # SIMCORE_MONITOR_MEMORY_WARN_PERCENT / SIMCORE_MONITOR_MEMORY_CRITICAL_PERCENT
+    monitor_cpu_warn_percent: float = 90
+    monitor_cpu_critical_percent: float = 98
+    monitor_memory_warn_percent: float = 85
+    monitor_memory_critical_percent: float = 95
     # Off-site backup status written by deploy/windows/backup.ps1.
     # Empty uses C:\simcore\backups\backup-status.json on Windows, and is
     # UNKNOWN elsewhere until SIMCORE_BACKUP_STATUS_PATH is set.
@@ -175,6 +183,8 @@ class Settings(BaseSettings):
             ("SIMCORE_MONITOR_DB_RTT", self.monitor_db_rtt_warn_ms, self.monitor_db_rtt_critical_ms),
             ("SIMCORE_MONITOR_DB_POOL", self.monitor_db_pool_warn, self.monitor_db_pool_critical),
             ("SIMCORE_MONITOR_DB_SIZE_MB", self.monitor_db_size_warn_mb, self.monitor_db_size_critical_mb),
+            ("SIMCORE_MONITOR_CPU_PERCENT", self.monitor_cpu_warn_percent, self.monitor_cpu_critical_percent),
+            ("SIMCORE_MONITOR_MEMORY_PERCENT", self.monitor_memory_warn_percent, self.monitor_memory_critical_percent),
         )
         for name, warn, critical in pairs:
             if warn < 0 or critical < 0:

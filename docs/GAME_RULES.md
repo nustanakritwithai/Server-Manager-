@@ -58,9 +58,13 @@ The client sends intent. The server checks ownership and state, then inserts the
 
 | Command | Who may issue it | What it schedules |
 | --- | --- | --- |
-| `MOVE_ARMY` | Your garrisoned army, to another city you own | `move` leg, event `ARMY_ARRIVE` |
+| `MOVE_ARMY` | Your garrisoned army, to another city you own | `move` leg, event `ARMY_ARRIVE`. `relocate` false reinforces; `relocate` true also changes home |
 | `ATTACK_CITY` | Your garrisoned army, to a city you do not own | `attack` leg, event `ARMY_ARRIVE` |
 | `RECALL_ARMY` | Your army that is marching, or garrisoned away from home | Cancels the outbound event if it is still pending, then a `return` leg and `ARMY_RETURN` |
+| `GARRISON` | Your garrisoned army, to another city you own | `garrison` leg, event `ARMY_ARRIVE`. Home city stays |
+| `TRAIN_UNITS` | Your city, a catalog unit, count 1–100 | Debits the city immediately, then `TRAIN_COMPLETE` after `seconds * count` |
+| `FOUND_CITY` | Your city pays the catalog cost, empty tile inside the map, under the city limit | Instant. New city stock is 0 |
+| `TRANSFER_RESOURCES` | Two different cities you own, at least one positive amount | Debits the source immediately. `TRANSFER_ARRIVE` credits the destination |
 | `BUILD` | Your city, known building name | `BUILD_COMPLETE` in 30 minutes |
 | `RESEARCH` | You, known tech name | `RESEARCH_COMPLETE` in 60 minutes |
 
@@ -129,7 +133,16 @@ Production is lazy. Whenever a city is read or a garrison is about to change, th
 produced = rate_per_hour * elapsed_seconds // 3600
 ```
 
-Food then pays garrison upkeep with the same formula. Each non-zero delta is one row in `transactions`, keyed by `accrue:{city}:{resource}:{previous last_updated}:production` (and `:upkeep` for food). The marker then moves to `now`. The fractional resource inside the current hour is dropped. Splitting one long gap into many short updates would drop more, so callers accrue the full gap in one shot.
+Food then pays garrison upkeep with the same formula. Each non-zero delta is one row in `transactions`. The marker then moves to `now`. The fractional resource inside the current hour is dropped. Splitting one long gap into many short updates would drop more, so callers accrue the full gap in one shot.
+
+The idempotency key records the window so a trace can recompute the row:
+
+- production: `accrue:{city}:{resource}:{previous last_updated}:production:{rate}`
+- upkeep: `accrue:{city}:food:{previous last_updated}:upkeep:{hourly}:{composition}`
+
+`composition` is `type*count` joined with `+`, unit names sorted. A command that accrues a city stamps that command's `trace_id` on those rows. A plain city read still accrues, and those rows keep a null `trace_id`.
+
+Training costs (wood, food, iron, gold, seconds per unit): militia 10/20/0/0/30, infantry 20/40/15/0/45, archer 25/25/10/5/45, cavalry 40/50/30/15/60. Founding costs 150/150/60/30 from the source city and the new city produces 40/40/20/10 per hour. A player may own 8 cities. New cities must sit on an integer tile inside -500..500 that is not already occupied. Convoys move at 10 tiles per hour with the same rounding as armies. On training completion the units join the chosen army when it is still garrisoned in that city; otherwise a new garrisoned army is created so the paid units are not lost.
 
 Loot leaves the defender at battle time and enters the attacker's home city when the army arrives home. Both sides are ledger rows tied to the source event:
 
@@ -142,4 +155,4 @@ Build and research record their own ledger rows (`building:…`, `research:…`)
 
 ## What is deliberately not here
 
-City capture, wall HP, wounded troops, morale, supply lines on the march, unit desertion, build costs, training timers beyond the stub events, fog of war, alliances, and a market. See the README for the server features left for later (real auth, backups, monitoring, a full dead-letter queue, rate limits, horizontal scaling).
+City capture, wall HP, wounded troops, morale, supply lines on the march, unit desertion, build costs, fog of war, and alliances. Resource transfer is only between cities of the same player. There is no market and no transfer to another player. See the README for the server features left for later (real auth, backups, a full dead-letter queue, rate limits, horizontal scaling).
