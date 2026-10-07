@@ -98,6 +98,9 @@ Assert-Equal "public ip from sslip" (Get-SimcorePublicIp @{ API_DOMAIN = "157-85
 Assert-Equal "public ip override" (Get-SimcorePublicIp @{ API_DOMAIN = "157-85-96-139.sslip.io"; SIMCORE_PUBLIC_IP = "203.0.113.10" }) "203.0.113.10"
 Assert-Equal "public ip missing" (Get-SimcorePublicIp @{ API_DOMAIN = "game.example.com" }) ""
 
+$validateArgs = @(Get-CaddyValidateArguments -ConfigPath "C:\simcore\Caddyfile")
+Assert-Equal "caddy validate uses the caddyfile adapter" ($validateArgs -join " ") "validate --config C:/simcore/Caddyfile --adapter caddyfile"
+
 $simple = New-SimcoreCaddyfileText -EnvMap @{ API_DOMAIN = "157-85-96-139.sslip.io"; API_PORT = "8741" } -InstallRoot "C:\simcore"
 Assert-True "simple has api upstream" ($simple.Contains("reverse_proxy 127.0.0.1:8741"))
 Assert-True "simple omits apache" (-not $simple.Contains("shortlived"))

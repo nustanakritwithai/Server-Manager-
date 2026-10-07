@@ -414,6 +414,13 @@ function Add-SimcoreApacheHttpsProxy {
     $Lines.Add("    }")
 }
 
+function Get-CaddyValidateArguments {
+    param([string]$ConfigPath)
+    $config = ([string]$ConfigPath) -replace '\\', '/'
+    # A temp path is not named Caddyfile, so Caddy would parse it as JSON.
+    return @("validate", "--config", $config, "--adapter", "caddyfile")
+}
+
 function New-SimcoreCaddyfileText {
     param([hashtable]$EnvMap, [string]$InstallRoot)
     $domain = [string]$EnvMap["API_DOMAIN"]

@@ -161,7 +161,7 @@ try {
     $utf8 = New-Object System.Text.UTF8Encoding $false
     [System.IO.File]::WriteAllText($tempCaddy, $caddyText, $utf8)
     Write-Host "Validating the Caddyfile"
-    $validate = Invoke-SimcoreNative -FilePath $caddy -ArgumentList @("validate", "--config", ($tempCaddy -replace '\\', '/'))
+    $validate = Invoke-SimcoreNative -FilePath $caddy -ArgumentList (Get-CaddyValidateArguments -ConfigPath $tempCaddy)
     Remove-Item -LiteralPath $tempCaddy -Force -ErrorAction SilentlyContinue
     $validateOk = ($validate.ExitCode -eq 0) -or ($validate.Output -match 'Valid configuration')
     if (-not $validateOk) {
