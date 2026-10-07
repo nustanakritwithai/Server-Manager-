@@ -70,17 +70,62 @@ function Get-SimcoreFileMagicBytes {
     }
 }
 
+function Get-SimcoreHeaderContentLength {
+    param($Response)
+    # Windows PowerShell often returns $null from Invoke-WebRequest -OutFile -PassThru.
+    if ($null -eq $Response) { return [long]0 }
+    $headers = $Response.Headers
+    if ($null -eq $headers) { return [long]0 }
+    $value = [string]$headers["Content-Length"]
+    $parsed = [long]0
+    if ($value -and [long]::TryParse($value, [ref]$parsed) -and $parsed -gt 0) { return $parsed }
+    return [long]0
+}
+
+function Get-SimcoreDeclaredDownloadBytes {
+    param($Response, [long]$ExpectedBytes)
+    $fromResponse = Get-SimcoreHeaderContentLength -Response $Response
+    if ($fromResponse -gt 0) { return $fromResponse }
+    if ($ExpectedBytes -gt 0) { return [long]$ExpectedBytes }
+    return [long]0
+}
+
+function Format-SimcoreDownloadLengthError {
+    param([string]$Url, [long]$ActualBytes, [long]$DeclaredBytes, [long]$MinimumBytes)
+    $wanted = $(if ($DeclaredBytes -gt 0) { "$DeclaredBytes" } else { "at least $MinimumBytes" })
+    return "Download of $Url is $ActualBytes bytes (expected $wanted). The incomplete file was discarded."
+}
+
 function Get-SimcoreContentLength {
     param([string]$Url)
     try {
         $head = Invoke-WebRequest -Uri $Url -Method Head -UseBasicParsing
-        $value = [string]$head.Headers["Content-Length"]
-        $parsed = [long]0
-        if ($value -and [long]::TryParse($value, [ref]$parsed) -and $parsed -gt 0) { return $parsed }
+        $parsed = Get-SimcoreHeaderContentLength -Response $head
+        if ($parsed -gt 0) { return $parsed }
     } catch {
         Write-Host "Could not read Content-Length for $Url. The download will be checked against the minimum size."
     }
     return [long]0
+}
+
+function Find-CurlExe {
+    $cmd = Get-Command -Name "curl.exe" -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cmd -and $cmd.Source) { return [string]$cmd.Source }
+    return $null
+}
+
+function Invoke-SimcoreFileDownload {
+    param([string]$Url, [string]$Destination)
+    # curl.exe is more reliable than Invoke-WebRequest -OutFile -PassThru on Windows Server.
+    $curl = Find-CurlExe
+    if ($curl) {
+        & $curl -L --fail --retry 3 -o $Destination $Url 1>$null
+        if ($LASTEXITCODE -ne 0) {
+            throw "curl.exe failed to download $Url (exit $LASTEXITCODE)."
+        }
+        return $null
+    }
+    return Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing -PassThru
 }
 
 function Save-SimcoreDownload {
@@ -107,15 +152,13 @@ function Save-SimcoreDownload {
     Write-Host "Downloading $Url"
     try {
         if (Test-Path -LiteralPath $partial) { Remove-Item -LiteralPath $partial -Force }
-        $response = Invoke-WebRequest -Uri $Url -OutFile $partial -UseBasicParsing -PassThru
-        $actual = [long](Get-Item -LiteralPath $partial).Length
-        $declared = [long]0
-        $headerLength = [string]$response.Headers["Content-Length"]
-        if ($headerLength) { [void][long]::TryParse($headerLength, [ref]$declared) }
-        if ($declared -le 0) { $declared = $expected }
+        $response = Invoke-SimcoreFileDownload -Url $Url -Destination $partial
+        $item = Get-Item -LiteralPath $partial -ErrorAction SilentlyContinue
+        if ($null -eq $item) { throw "Download of $Url did not create a file." }
+        $actual = [long]$item.Length
+        $declared = Get-SimcoreDeclaredDownloadBytes -Response $response -ExpectedBytes $expected
         if (-not (Test-SimcoreDownloadComplete -ActualBytes $actual -ExpectedBytes $declared -MinimumBytes $MinimumBytes)) {
-            $wanted = $(if ($declared -gt 0) { "$declared" } else { "at least $MinimumBytes" })
-            throw "Download of $Url is $actual bytes (expected $wanted). The incomplete file was discarded."
+            throw (Format-SimcoreDownloadLengthError -Url $Url -ActualBytes $actual -DeclaredBytes $declared -MinimumBytes $MinimumBytes)
         }
         $magic = Get-SimcoreFileMagicBytes $partial
         if (-not (Test-SimcoreFileMagic -First $magic[0] -Second $magic[1] -Kind $kind)) {
@@ -334,6 +377,12 @@ function Assert-SimcoreInstallerArguments {
     }
 }
 
+function Get-SimcoreProcessExitCode {
+    param($Process)
+    if ($null -eq $Process) { return $null }
+    return $Process.ExitCode
+}
+
 function Test-SimcoreInstallerExit {
     param($ExitCode)
     if ($null -eq $ExitCode -or [string]$ExitCode -eq "") { return $false }
@@ -370,8 +419,11 @@ function Ensure-Python {
     $proc = Start-SimcoreInstaller -FilePath $installer -ArgumentList @(
         "/quiet", "InstallAllUsers=1", "PrependPath=1", "Include_test=0", "Include_pip=1"
     )
-    if (-not (Test-SimcoreInstallerExit $proc.ExitCode)) {
-        throw "Python installer failed with exit code $($proc.ExitCode)."
+    $exitCode = Get-SimcoreProcessExitCode $proc
+    if (-not (Test-SimcoreInstallerExit $exitCode)) {
+        $codeText = "(no exit code)"
+        if ($null -ne $exitCode) { $codeText = [string]$exitCode }
+        throw "Python installer failed with exit code $codeText."
     }
     Update-SimcorePath
     if (-not (Find-Python312)) { throw "Python 3.12 installed but python.exe was not found." }
@@ -424,9 +476,10 @@ function Ensure-PostgresInstalled {
         "--serverport", "5432",
         "--enable-components", "server,commandlinetools"
     )
-    if (-not (Test-SimcoreInstallerExit $proc.ExitCode)) {
+    $exitCode = Get-SimcoreProcessExitCode $proc
+    if (-not (Test-SimcoreInstallerExit $exitCode)) {
         $codeText = "(no exit code)"
-        if ($null -ne $proc -and $null -ne $proc.ExitCode) { $codeText = [string]$proc.ExitCode }
+        if ($null -ne $exitCode) { $codeText = [string]$exitCode }
         throw "PostgreSQL installer failed with exit code $codeText. The download size was checked before it ran. Log: $env:TEMP\install-postgresql.log"
     }
     Update-SimcorePath
@@ -750,7 +803,7 @@ function Wait-SimcoreApi {
     for ($i = 1; $i -le 30; $i++) {
         try {
             $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 3
-            if ($response.StatusCode -eq 200) {
+            if ($null -ne $response -and $response.StatusCode -eq 200) {
                 Write-Host "API is ready at $url"
                 return
             }
