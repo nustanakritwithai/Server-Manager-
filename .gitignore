@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 sim-reports/
+load-reports/
 .mypy_cache/
 .ruff_cache/
 *.egg-info/

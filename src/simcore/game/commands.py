@@ -349,8 +349,7 @@ def queue_build(session: Session, player: Player, city_id: int, building: str, n
         trace_id=trace_id,
         created_at=now,
     )
-    session.add(event)
-    session.flush()
+    _flush_event(session, event)
     bump_world_version(session)
     return event
 
@@ -377,8 +376,7 @@ def queue_research(session: Session, player: Player, tech: str, now: datetime) -
         trace_id=trace_id,
         created_at=now,
     )
-    session.add(event)
-    session.flush()
+    _flush_event(session, event)
     bump_world_version(session)
     return event
 
