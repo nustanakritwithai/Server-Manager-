@@ -576,61 +576,178 @@ function Convert-SimcoreCommandText {
     return ("" + $Value).Trim()
 }
 
+function Convert-SimcoreSqlLiteral {
+    param([string]$Value)
+    if ($null -eq $Value) { $Value = "" }
+    return "'" + $Value.Replace("'", "''") + "'"
+}
+
+function Get-SimcoreAlterRolePasswordSql {
+    param([string]$Role, [string]$Password)
+    if ($Role -ne "postgres" -and $Role -ne "simcore") {
+        throw "Refusing to change the password for role $Role."
+    }
+    $literal = Convert-SimcoreSqlLiteral $Password
+    return "ALTER ROLE $Role WITH LOGIN PASSWORD $literal;"
+}
+
+function Get-SimcoreEnsureRoleSql {
+    param([string]$Password)
+    $literal = Convert-SimcoreSqlLiteral $Password
+    $marker = '$simcore$'
+    if ($literal.Contains($marker)) {
+        $marker = '$sim' + ([guid]::NewGuid().ToString("N")) + '$'
+    }
+    return @(
+        "DO $marker",
+        "BEGIN",
+        "  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'simcore') THEN",
+        "    EXECUTE format('ALTER ROLE simcore WITH LOGIN PASSWORD %L', $literal);",
+        "  ELSE",
+        "    EXECUTE format('CREATE ROLE simcore LOGIN PASSWORD %L', $literal);",
+        "  END IF;",
+        "END",
+        "$marker;"
+    ) -join "`n"
+}
+
+function Get-SimcoreCreateDatabaseSql {
+    return "CREATE DATABASE simcore OWNER simcore;"
+}
+
+function Get-SimcorePublicSchemaOwnerSql {
+    return "ALTER SCHEMA public OWNER TO simcore;"
+}
+
+function Test-SimcoreCatalogRowPresent {
+    param($Output)
+    return (Convert-SimcoreCommandText $Output) -eq "1"
+}
+
+function Format-SimcorePsqlFailure {
+    param($ExitCode, [string]$Database, [string]$Output)
+    $codeText = "(no exit code)"
+    if ($null -ne $ExitCode -and "$ExitCode" -ne "") { $codeText = [string]$ExitCode }
+    $body = Convert-SimcoreCommandText $Output
+    if ([string]::IsNullOrWhiteSpace($body)) { $body = "(no output)" }
+    return "psql failed (exit $codeText) on database ${Database}: $body"
+}
+
+function Read-SimcoreTextFile {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) { return "" }
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -eq 0) { return "" }
+    return [System.Text.Encoding]::UTF8.GetString($bytes)
+}
+
 function Invoke-Psql {
     param(
         [string]$Psql,
         [string]$Database = "postgres",
-        [string]$Command,
-        [hashtable]$Variables
+        [string]$Command
     )
-    # -w fails instead of prompting if the password is wrong, so the script cannot hang on a password prompt.
-    $args = @("-w", "-U", "postgres", "-h", "127.0.0.1", "-d", $Database, "-v", "ON_ERROR_STOP=1", "-tA")
-    if ($Variables) {
-        foreach ($key in $Variables.Keys) {
-            $args += @("-v", "${key}=$($Variables[$key])")
+    if ([string]::IsNullOrWhiteSpace($Psql)) { throw "psql.exe path is empty." }
+    if ([string]::IsNullOrWhiteSpace($Command)) { throw "psql command is empty." }
+    if ([string]::IsNullOrWhiteSpace($Database)) { $Database = "postgres" }
+    # Passwords are already SQL literals inside $Command. Do not use psql -v or :'var'.
+    $psqlArgs = @(
+        "-w", "-X",
+        "-U", "postgres",
+        "-h", "127.0.0.1",
+        "-d", $Database,
+        "--set=ON_ERROR_STOP=1",
+        "-tA",
+        "-c", $Command
+    )
+    $stamp = [guid]::NewGuid().ToString("N")
+    $outFile = Join-Path ([System.IO.Path]::GetTempPath()) ("simcore-psql-out-" + $stamp + ".txt")
+    $errFile = Join-Path ([System.IO.Path]::GetTempPath()) ("simcore-psql-err-" + $stamp + ".txt")
+    $hadEncoding = Test-Path Env:PGCLIENTENCODING
+    $previousEncoding = $env:PGCLIENTENCODING
+    $previousPreference = $ErrorActionPreference
+    $env:PGCLIENTENCODING = "UTF8"
+    $ErrorActionPreference = "Continue"
+    try {
+        & $Psql @psqlArgs 1> $outFile 2> $errFile
+        $exitCode = $LASTEXITCODE
+        $stdout = Read-SimcoreTextFile $outFile
+        $stderr = Read-SimcoreTextFile $errFile
+        if ($exitCode -ne 0) {
+            $combined = (@($stdout, $stderr) -join "`n")
+            throw (Format-SimcorePsqlFailure -ExitCode $exitCode -Database $Database -Output $combined)
         }
+        return (Convert-SimcoreCommandText $stdout)
+    } finally {
+        $ErrorActionPreference = $previousPreference
+        if ($hadEncoding) { $env:PGCLIENTENCODING = $previousEncoding } else { Remove-Item Env:PGCLIENTENCODING -ErrorAction SilentlyContinue }
+        if (Test-Path -LiteralPath $outFile) { Remove-Item -LiteralPath $outFile -Force -ErrorAction SilentlyContinue }
+        if (Test-Path -LiteralPath $errFile) { Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue }
     }
-    if ($Command) { $args += @("-c", $Command) }
-    $output = & $Psql @args
-    if ($LASTEXITCODE -ne 0) { throw "psql failed: $Command" }
-    return $output
+}
+
+function Test-PsqlSuperuserLogin {
+    param([string]$Psql)
+    if ([string]::IsNullOrWhiteSpace($Psql)) { return $false }
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $Psql -w -X -U postgres -h 127.0.0.1 -d postgres -tA -c "SELECT 1" 1>$null 2>$null
+        return ($LASTEXITCODE -eq 0)
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
 }
 
 function Test-PostgresLogin {
     param([string]$Psql, [string]$Password)
+    $had = Test-Path Env:PGPASSWORD
     $previous = $env:PGPASSWORD
     $env:PGPASSWORD = $Password
-    & $Psql -w -U postgres -h 127.0.0.1 -d postgres -c "SELECT 1" | Out-Null
-    $ok = ($LASTEXITCODE -eq 0)
-    if ($null -ne $previous) { $env:PGPASSWORD = $previous } else { Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue }
+    $ok = Test-PsqlSuperuserLogin -Psql $Psql
+    if ($had) { $env:PGPASSWORD = $previous } else { Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue }
     return $ok
 }
 
 function Initialize-SimcoreDatabase {
     param([string]$Psql, [hashtable]$EnvMap)
-    $super = $EnvMap["POSTGRES_SUPER_PASSWORD"]
-    $dbPass = $EnvMap["SIMCORE_DB_PASSWORD"]
-    if (-not (Test-PostgresLogin -Psql $Psql -Password $super)) {
-        if (Test-PostgresLogin -Psql $Psql -Password "postgres") {
+    if ($null -eq $EnvMap) { throw "Production env map is empty. Cannot initialize the database." }
+    $super = [string]$EnvMap["POSTGRES_SUPER_PASSWORD"]
+    $dbPass = [string]$EnvMap["SIMCORE_DB_PASSWORD"]
+    Assert-SimcoreSecretPresent -Value $super -Name "POSTGRES_SUPER_PASSWORD"
+    Assert-SimcoreSecretPresent -Value $dbPass -Name "SIMCORE_DB_PASSWORD"
+    if ([string]::IsNullOrWhiteSpace($Psql)) { throw "psql.exe path is empty." }
+
+    $hadPassword = Test-Path Env:PGPASSWORD
+    $previousPassword = $env:PGPASSWORD
+    try {
+        $env:PGPASSWORD = $super
+        if (-not (Test-PsqlSuperuserLogin -Psql $Psql)) {
             $env:PGPASSWORD = "postgres"
-            Invoke-Psql -Psql $Psql -Command "ALTER ROLE postgres WITH PASSWORD :'simpass';" -Variables @{ simpass = $super } | Out-Null
+            if (-not (Test-PsqlSuperuserLogin -Psql $Psql)) {
+                throw "Could not sign in as postgres. Set POSTGRES_SUPER_PASSWORD in .env.prod to the current password and run bootstrap again."
+            }
+            Invoke-Psql -Psql $Psql -Command (Get-SimcoreAlterRolePasswordSql -Role "postgres" -Password $super) | Out-Null
+            $env:PGPASSWORD = $super
+            if (-not (Test-PsqlSuperuserLogin -Psql $Psql)) {
+                throw "The postgres superuser password was changed but the new password was rejected."
+            }
             Write-Host "Rotated the postgres superuser password away from the installer default."
-        } else {
-            throw "Could not sign in as postgres. Set POSTGRES_SUPER_PASSWORD in .env.prod to the current password and run bootstrap again."
         }
+        Write-Host "Ensuring the simcore login role"
+        Invoke-Psql -Psql $Psql -Command (Get-SimcoreEnsureRoleSql -Password $dbPass) | Out-Null
+        $database = Invoke-Psql -Psql $Psql -Command "SELECT 1 FROM pg_database WHERE datname = 'simcore'"
+        if (-not (Test-SimcoreCatalogRowPresent $database)) {
+            Write-Host "Creating the simcore database"
+            Invoke-Psql -Psql $Psql -Command (Get-SimcoreCreateDatabaseSql) | Out-Null
+        } else {
+            Write-Host "The simcore database already exists"
+        }
+        Write-Host "Giving simcore ownership of the public schema"
+        Invoke-Psql -Psql $Psql -Database "simcore" -Command (Get-SimcorePublicSchemaOwnerSql) | Out-Null
+    } finally {
+        if ($hadPassword) { $env:PGPASSWORD = $previousPassword } else { Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue }
     }
-    $env:PGPASSWORD = $super
-    $role = Convert-SimcoreCommandText (Invoke-Psql -Psql $Psql -Command "SELECT 1 FROM pg_roles WHERE rolname = 'simcore'")
-    if ($role -eq "1") {
-        Invoke-Psql -Psql $Psql -Command "ALTER ROLE simcore WITH LOGIN PASSWORD :'simpass';" -Variables @{ simpass = $dbPass } | Out-Null
-    } else {
-        Invoke-Psql -Psql $Psql -Command "CREATE ROLE simcore LOGIN PASSWORD :'simpass';" -Variables @{ simpass = $dbPass } | Out-Null
-    }
-    $db = Convert-SimcoreCommandText (Invoke-Psql -Psql $Psql -Command "SELECT 1 FROM pg_database WHERE datname = 'simcore'")
-    if ([string]::IsNullOrWhiteSpace($db) -or $db -notmatch "1") {
-        Invoke-Psql -Psql $Psql -Command "CREATE DATABASE simcore OWNER simcore;" | Out-Null
-    }
-    Invoke-Psql -Psql $Psql -Database "simcore" -Command "ALTER SCHEMA public OWNER TO simcore;" | Out-Null
 }
 
 function Write-SimcoreCaddyfile {
