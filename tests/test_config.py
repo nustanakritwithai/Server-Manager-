@@ -115,6 +115,25 @@ def test_production_rejects_a_short_player_token_secret(monkeypatch: pytest.Monk
         get_settings.cache_clear()
 
 
+def test_direct_seed_helpers_refuse_outside_dev_and_test(monkeypatch: pytest.MonkeyPatch) -> None:
+    from datetime import datetime, timezone
+
+    from simcore.sim.seed_world import seed_bots, seed_holdings
+
+    monkeypatch.setenv("SIMCORE_ENV", "production")
+    monkeypatch.setenv("SIMCORE_ADMIN_TOKEN", "generated-token-not-a-default")
+    monkeypatch.setenv("SIMCORE_PLAYER_TOKEN_SECRET", "p" * 48)
+    get_settings.cache_clear()
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    try:
+        with pytest.raises(RuntimeError, match="without the ledger"):
+            seed_bots(None, now, 1)  # type: ignore[arg-type]
+        with pytest.raises(RuntimeError, match="without the ledger"):
+            seed_holdings(None, now, ["Ada"])  # type: ignore[arg-type]
+    finally:
+        get_settings.cache_clear()
+
+
 def test_start_settings_reject_a_bad_army_and_a_map_outside_the_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
     get_settings.cache_clear()
     try:

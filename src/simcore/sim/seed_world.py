@@ -1,11 +1,15 @@
-"""Opening totals the simulator checks against, and a legacy direct insert.
+"""Opening totals the simulator checks against, and a dev-only direct insert.
 
-CI and the load tool no longer call ``seed_holdings``. Registration grants the
-home, the army, and the resources through the API. ``opening_resources`` is
-zero because those stocks are ledger rows. ``opening_units`` is the configured
-starting army times the player count. ``seed_holdings`` remains for a test that
-still wants a hand-built world; it writes balances without the ledger, so a
-ledger check on that world does not describe a registered player.
+CI and the load tool do not call ``seed_bots`` or ``seed_holdings``. Registration
+grants the home, the army, and the resources through the API. ``opening_resources``
+is zero because those stocks are ledger rows. ``opening_units`` is the configured
+starting army times the player count.
+
+``seed_bots`` and ``seed_holdings`` write city resource columns directly. They do
+not call the ledger, so a ledger integrity check or a restore drill on that world
+does not describe a registered player. They run only when ``SIMCORE_ENV`` is
+``dev``, ``development``, ``test``, or ``testing``. Production raises before any
+row is inserted. They are not a CLI and deploy does not call them.
 """
 
 from __future__ import annotations
@@ -97,12 +101,32 @@ def _roster_unit_totals(player_count: int, roster: str) -> dict[str, int]:
     return totals
 
 
-def seed_bots(session: Session, now: datetime, player_count: int, roster: str = "default") -> dict[str, object]:
-    """Insert the bot world. Refuses when any player already exists.
+_DEV_ENVS = frozenset({"dev", "development", "test", "testing"})
 
-    Does not delete or truncate. A second call on a used database raises.
+
+def _require_dev_seed(name: str) -> None:
+    """Refuse a direct balance insert outside a local dev or test process."""
+
+    from simcore.config import get_settings
+
+    env = get_settings().env.strip().lower()
+    if env not in _DEV_ENVS:
+        raise RuntimeError(
+            f"{name} writes resource balances without the ledger and only runs when "
+            "SIMCORE_ENV is dev, development, test, or testing. "
+            "Register a player with POST /v1/auth/register so the start goes through the ledger."
+        )
+
+
+def seed_bots(session: Session, now: datetime, player_count: int, roster: str = "default") -> dict[str, object]:
+    """Insert a bot world without the ledger. Development and test only.
+
+    Refuses when any player already exists. Does not delete or truncate.
+    A second call on a used database raises. Production raises before the insert.
+    A ledger check on this world fails, because the city stocks have no ledger rows.
     """
 
+    _require_dev_seed("seed_bots")
     if player_count < 1:
         raise ValueError("player_count must be at least 1")
     if roster not in _ROSTERS:
@@ -138,13 +162,15 @@ def seed_holdings(
     names: list[str],
     roster: str = "default",
 ) -> dict[str, object]:
-    """Attach a home, a camp, and one army to players that already exist.
+    """Attach a home, a camp, and one army without the ledger. Development and test only.
 
     Registration creates the player rows. This does not create players and does
     not delete anything. It refuses when the database already has a city.
-    ``roster`` selects the opening stacks. Full mode uses ``coverage``.
+    ``roster`` selects the opening stacks. Production raises before the insert.
+    A ledger check on this world fails, because the city stocks have no ledger rows.
     """
 
+    _require_dev_seed("seed_holdings")
     if not names:
         raise ValueError("names must not be empty")
     if roster not in _ROSTERS:
