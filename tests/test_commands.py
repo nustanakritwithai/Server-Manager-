@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import math
+import time
+from datetime import datetime
+
 from simcore.constants import ArmyStatus
 from simcore.db import get_sessionmaker
 from simcore.models import City
@@ -156,6 +160,143 @@ def test_build_and_research_complete_once(client, frozen) -> None:
     me = client.get("/v1/me", headers=alice).json()
     assert city["buildings"]["barracks"] == 1
     assert me["research"]["logistics"] == 1
+
+
+def test_live_server_shows_the_march_as_soon_as_move_returns(db, frozen) -> None:
+    """A follow-up request on the same connection must see the committed march.
+
+    Uvicorn can start the next request as soon as the response bytes are
+    written. Committing after that write made reinforce flaky: catch-up ticked
+    the old clock, processed nothing, and the army was still at home.
+    """
+
+    import socket
+    import threading
+
+    import httpx
+    import uvicorn
+
+    from simcore.db import get_sessionmaker
+    from simcore.main import create_app
+    from simcore.models import City
+
+    ids = create_scenario(frozen.now(), rate=0, stock=100)
+    session = get_sessionmaker()()
+    try:
+        camp = City(
+            player_id=ids["alice_id"],
+            name="Near Camp",
+            x=6,
+            y=0,
+            wood=0,
+            food=0,
+            iron=0,
+            gold=0,
+            wood_rate=0,
+            food_rate=0,
+            iron_rate=0,
+            gold_rate=0,
+            buildings={},
+            last_updated=frozen.now(),
+            created_at=frozen.now(),
+        )
+        session.add(camp)
+        session.commit()
+        camp_id = camp.id
+    finally:
+        session.close()
+
+    app = create_app(base_clock=frozen)
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = int(sock.getsockname()[1])
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", access_log=False)
+    server = uvicorn.Server(config)
+    server.install_signal_handlers = lambda: None
+    thread = threading.Thread(target=server.run, name="move-visibility", daemon=True)
+    thread.start()
+    try:
+        with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=30.0) as live:
+            ready = 0
+            for _ in range(50):
+                try:
+                    ready_response = live.get("/health/ready")
+                except httpx.HTTPError:
+                    time.sleep(0.05)
+                    continue
+                ready = ready_response.status_code
+                if ready == 200:
+                    break
+                time.sleep(0.05)
+            assert ready == 200
+            logged = live.post("/v1/auth/dev-login", json={"name": "Alice"})
+            assert logged.status_code == 200, logged.text
+            alice = {"Authorization": f"Bearer {logged.json()['token']}"}
+
+            for _ in range(40):
+                advanced = live.post("/v1/admin/clock/advance", json={"seconds": 1}, headers=ADMIN)
+                assert advanced.status_code == 200, advanced.text
+                seen = live.get("/v1/time", headers=alice)
+                assert seen.status_code == 200, seen.text
+                assert seen.json()["offset_seconds"] == advanced.json()["offset_seconds"]
+
+            for _ in range(4):
+                moved = live.post(
+                    "/v1/commands/move",
+                    json={"army_id": ids["alice_army"], "destination_city_id": camp_id, "relocate": False},
+                    headers=alice,
+                )
+                assert moved.status_code == 200, moved.text
+                event_id = int(moved.json()["event_id"])
+                marching = live.get("/v1/me/armies", headers=alice)
+                assert marching.status_code == 200, marching.text
+                row = marching.json()["armies"][0]
+                assert row["status"] == "marching", row
+                assert row["location_city_id"] is None
+                detail = live.get(f"/v1/admin/events/{event_id}", headers=ADMIN)
+                assert detail.status_code == 200, detail.text
+                assert detail.json()["event"]["status"] == "pending"
+
+                clock = live.get("/v1/time", headers=alice).json()
+                arrive = datetime.fromisoformat(str(moved.json()["arrive_at"]).replace("Z", "+00:00"))
+                now = datetime.fromisoformat(str(clock["server_time"]).replace("Z", "+00:00"))
+                seconds = max(1, math.ceil((arrive - now).total_seconds()))
+                advanced = live.post("/v1/admin/clock/advance", json={"seconds": seconds}, headers=ADMIN)
+                assert advanced.status_code == 200, advanced.text
+                ticked = live.post("/v1/admin/worker/tick", headers=ADMIN)
+                assert ticked.status_code == 200, ticked.text
+                assert int(ticked.json()["processed"]) >= 1, ticked.text
+                garrisoned = live.get("/v1/me/armies", headers=alice).json()["armies"][0]
+                assert garrisoned["status"] == "garrisoned", garrisoned
+                assert garrisoned["location_city_id"] == camp_id
+                assert garrisoned["home_city_id"] == ids["alice_city"]
+                completed = live.get(f"/v1/admin/events/{event_id}", headers=ADMIN)
+                assert completed.json()["event"]["status"] == "completed"
+
+                recalled = live.post(
+                    "/v1/commands/recall",
+                    json={"army_id": ids["alice_army"]},
+                    headers=alice,
+                )
+                assert recalled.status_code == 200, recalled.text
+                home_event = int(recalled.json()["event_id"])
+                leaving = live.get("/v1/me/armies", headers=alice).json()["armies"][0]
+                assert leaving["status"] == "returning", leaving
+                clock = live.get("/v1/time", headers=alice).json()
+                arrive = datetime.fromisoformat(str(recalled.json()["arrive_at"]).replace("Z", "+00:00"))
+                now = datetime.fromisoformat(str(clock["server_time"]).replace("Z", "+00:00"))
+                seconds = max(1, math.ceil((arrive - now).total_seconds()))
+                advanced = live.post("/v1/admin/clock/advance", json={"seconds": seconds}, headers=ADMIN)
+                assert advanced.status_code == 200, advanced.text
+                ticked = live.post("/v1/admin/worker/tick", headers=ADMIN)
+                assert int(ticked.json()["processed"]) >= 1, ticked.text
+                home = live.get("/v1/me/armies", headers=alice).json()["armies"][0]
+                assert home["status"] == "garrisoned", home
+                assert home["location_city_id"] == ids["alice_city"]
+                assert live.get(f"/v1/admin/events/{home_event}", headers=ADMIN).json()["event"]["status"] == "completed"
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
 
 
 def test_command_permissions(client, frozen) -> None:
