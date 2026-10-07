@@ -134,11 +134,13 @@ Assert-Throws "null installer arg" {
     Assert-SimcoreInstallerArguments -FilePath "C:\temp\postgresql.exe" -ArgumentList @("--superpassword", $null)
 } "empty"
 
-$lowDisk = Format-SimcoreLowDiskMessage -Root "C:\" -AvailableBytes 1610612736 -MinimumBytes 3221225472
+$floor = [long]1288490189
+$free257 = [long]2759516483
+$lowDisk = Format-SimcoreLowDiskMessage -Root "C:\" -AvailableBytes 1073741824 -MinimumBytes $floor
 Assert-True "low disk names the drive" ($lowDisk.Contains("Not enough free space on C:\"))
-Assert-True "low disk asks for 3 GB" ($lowDisk.Contains("3 GB"))
-Assert-True "2 GB is under budget" (-not (Test-SimcoreDiskBudget -AvailableBytes 1610612736 -MinimumBytes 3221225472))
-Assert-True "3 GB meets budget" (Test-SimcoreDiskBudget -AvailableBytes 3221225472 -MinimumBytes 3221225472)
+Assert-Equal "low disk prints free and required" $lowDisk "Not enough free space on C:\. FreeGB=1.00 RequiredGB=1.20. Free space, then run bootstrap again."
+Assert-True "1.00 GB is under the floor" (-not (Test-SimcoreDiskBudget -AvailableBytes 1073741824 -MinimumBytes $floor))
+Assert-True "2.57 GB meets the floor" (Test-SimcoreDiskBudget -AvailableBytes $free257 -MinimumBytes $floor)
 Assert-SimcoreFreeDisk -Path ([System.IO.Path]::GetTempPath()) -MinimumBytes 1 | Out-Null
 Assert-Throws "huge disk requirement" {
     Assert-SimcoreFreeDisk -Path ([System.IO.Path]::GetTempPath()) -MinimumBytes ([int64]::MaxValue)
