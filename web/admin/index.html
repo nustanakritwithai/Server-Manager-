@@ -24,11 +24,11 @@
           </label>
           <label class="grow">
             <span class="label">X-Admin-Token</span>
-            <input id="admin-token" type="password" autocomplete="off" spellcheck="false" />
+            <input id="admin-token" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="text" />
           </label>
         </div>
         <label class="check"><input id="remember-token" type="checkbox" /><span>Remember token on this device</span></label>
-        <p class="muted">When selected, the token is saved in this browser profile and loaded automatically. Code running on this page’s origin may access it. Use Clear token to remove it. The API still checks the header.</p>
+        <p class="muted">The box starts unchecked. Connect keeps the token in memory for this tab unless Remember token on this device is checked; then Connect saves it in this browser profile and later visits load it. Clear token removes it. Anything else served from this page’s origin can read a saved token. Pasted tokens drop surrounding spaces, line breaks, non-breaking spaces, and zero-width characters. The token is not written to session storage, cookies, the URL, or the console. The API still checks the header.</p>
         <div class="row">
           <button type="submit">Connect</button>
           <button type="button" id="lock-btn" class="ghost">Clear token</button>

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from sqlalchemy import func, select
@@ -53,17 +54,58 @@ def _fingerprint() -> tuple[int, int, int, str]:
         session.close()
 
 
-def test_admin_pages_do_not_store_the_token() -> None:
+def _input_tag(html: str, element_id: str) -> str:
+    match = re.search(rf'<input\b[^>]*\bid="{re.escape(element_id)}"[^>]*>', html)
+    assert match is not None, element_id
+    return match.group(0)
+
+
+def test_admin_pages_store_the_token_only_when_remembered() -> None:
     js = (ROOT / "web" / "admin" / "admin.js").read_text(encoding="utf-8")
     html = (ROOT / "web" / "admin" / "index.html").read_text(encoding="utf-8")
     game = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
-    assert "sessionStorage" not in js
-    assert "document.cookie" not in js
-    assert "dev-admin" not in js
-    assert "dev-admin" not in html
-    assert js.count("localStorage.setItem") == 1
+
+    remember = _input_tag(html, "remember-token")
+    assert 'type="checkbox"' in remember
+    assert re.search(r"\bchecked\b", remember) is None
+    assert "Remember token on this device" in html
+
+    assert 'const STORAGE_TOKEN = "simcore.adminToken"' in js
     assert "simcore.apiBaseUrl" in js
     assert "simcore.token" not in js
+    assert re.search(r'state\.token\s*=\s*"[^"]+"', js) is None
+    assert re.search(r"state\.token\s*=\s*'[^']+'", js) is None
+    writes = re.findall(r"localStorage\.setItem\(([^)]*)\)", js)
+    assert set(writes) == {"STORAGE_URL, state.apiBaseUrl", "STORAGE_TOKEN, clean"}
+    assert "if (clean) localStorage.setItem(STORAGE_TOKEN, clean);" in js
+    assert 'const remember = $("remember-token").checked;' in js
+    assert re.findall(r"(?<!function )persistToken\(([^)]*)\)", js) == [
+        'remember ? state.token : ""',
+        '""',
+    ]
+    lock = re.search(r'\$\("lock-btn"\)\.addEventListener\("click", \(\) => \{([\s\S]*?)\n  \}\);', js)
+    assert lock is not None
+    assert 'state.token = ""' in lock.group(1)
+    assert '$("remember-token").checked = false' in lock.group(1)
+    assert 'persistToken("")' in lock.group(1)
+    assert "localStorage.removeItem(STORAGE_TOKEN)" in js
+
+    assert "sessionStorage" not in js
+    assert "document.cookie" not in js
+    assert "console." not in js
+    for line in js.splitlines():
+        if re.search(r"state\.token|STORAGE_TOKEN|normalizeAdminToken|X-Admin-Token", line):
+            assert "location." not in line
+            assert "history." not in line
+            assert "URLSearchParams" not in line
+            assert "document.cookie" not in line
+            assert "console." not in line
+            assert "sessionStorage" not in line
+
+    for path in (ROOT / "web").rglob("*"):
+        if path.is_file():
+            assert "dev-admin" not in path.read_text(encoding="utf-8"), path
+
     assert js.count("confirm: true") == 1
     assert "X-Admin-Token" in js
     assert 'id="restore-go"' in html
@@ -71,6 +113,41 @@ def test_admin_pages_do_not_store_the_token() -> None:
     assert 'id="login-form"' in game
     assert 'id="attack-btn"' in game
     assert 'href="admin/"' in game
+
+
+def test_typed_admin_token_is_normalized_before_use() -> None:
+    js = (ROOT / "web" / "admin" / "admin.js").read_text(encoding="utf-8")
+    html = (ROOT / "web" / "admin" / "index.html").read_text(encoding="utf-8")
+    match = re.search(r"function normalizeAdminToken\(value\) \{\n([\s\S]*?)\n  \}", js)
+    assert match is not None
+    body = match.group(1)
+    zero_width = body.find(r"[\u200B-\u200D\uFEFF]")
+    nbsp = body.find(r"\u00A0")
+    breaks = body.find(r"[\r\n]")
+    trim = body.find(".trim()")
+    assert zero_width != -1 and "/g" in body[zero_width:zero_width + 40]
+    assert nbsp != -1 and "/g" in body[nbsp:nbsp + 24]
+    assert breaks != -1 and "/g" in body[breaks:breaks + 20]
+    assert trim != -1
+    assert max(zero_width, nbsp, breaks) < trim
+    assert 'const typed = normalizeAdminToken($("admin-token").value);' in js
+    assert "if (typed) state.token = typed;" in js
+    assert 'return normalizeAdminToken(localStorage.getItem(STORAGE_TOKEN) || "");' in js
+    assert "const clean = normalizeAdminToken(token);" in js
+    assert "const token = normalizeAdminToken(state.token);" in js
+    assert 'headers.set("X-Admin-Token", token);' in js
+    assert 'state.token = $("admin-token").value' not in js
+    token_input = _input_tag(html, "admin-token")
+    assert 'type="password"' in token_input
+    assert "value=" not in token_input
+    for attr in (
+        'autocomplete="off"',
+        'autocapitalize="off"',
+        'autocorrect="off"',
+        'spellcheck="false"',
+        'inputmode="text"',
+    ):
+        assert attr in token_input
 
 
 def test_admin_routes_reject_a_missing_or_wrong_token(client) -> None:

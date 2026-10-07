@@ -23,17 +23,26 @@
     return (localStorage.getItem(STORAGE_URL) || "").replace(/\/+$/, "");
   }
 
+  function normalizeAdminToken(value) {
+    return String(value || "")
+      .replace(/[\u200B-\u200D\uFEFF]/g, "")
+      .replace(/\u00A0/g, "")
+      .replace(/[\r\n]/g, "")
+      .trim();
+  }
+
   function savedToken() {
     try {
-      return localStorage.getItem(STORAGE_TOKEN) || "";
+      return normalizeAdminToken(localStorage.getItem(STORAGE_TOKEN) || "");
     } catch {
       return "";
     }
   }
 
   function persistToken(token) {
+    const clean = normalizeAdminToken(token);
     try {
-      if (token) localStorage.setItem(STORAGE_TOKEN, token);
+      if (clean) localStorage.setItem(STORAGE_TOKEN, clean);
       else localStorage.removeItem(STORAGE_TOKEN);
       return true;
     } catch {
@@ -162,8 +171,9 @@
     const headers = new Headers(opts.headers || {});
     if (opts.json !== undefined) headers.set("Content-Type", "application/json");
     if (opts.admin !== false) {
-      if (!state.token) throw new Error("Enter the admin token for this session");
-      headers.set("X-Admin-Token", state.token);
+      const token = normalizeAdminToken(state.token);
+      if (!token) throw new Error("Enter the admin token for this session");
+      headers.set("X-Admin-Token", token);
     }
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), REQUEST_MS);
@@ -816,7 +826,7 @@
   function connect(event) {
     event.preventDefault();
     state.apiBaseUrl = $("api-url").value.trim().replace(/\/+$/, "");
-    const typed = $("admin-token").value;
+    const typed = normalizeAdminToken($("admin-token").value);
     if (typed) state.token = typed;
     $("admin-token").value = "";
     if (state.apiBaseUrl) localStorage.setItem(STORAGE_URL, state.apiBaseUrl);
