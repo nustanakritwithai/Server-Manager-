@@ -191,11 +191,8 @@ def git_commit() -> str | None:
         return _commit_cache
     root = Path(__file__).resolve().parents[2]
     try:
-        # safe.directory=* lets a checkout owned by another user (GitHub-hosted
-        # runners) resolve. Without it, git refuses and the check stays
-        # NOT INSTRUMENTED, which fails a full-coverage run.
         completed = subprocess.run(
-            ["git", "-c", "safe.directory=*", "rev-parse", "HEAD"],
+            ["git", "rev-parse", "HEAD"],
             cwd=root,
             capture_output=True,
             text=True,
@@ -1046,10 +1043,6 @@ def _heartbeat_checks(session: Session, wall_now: datetime, settings: Settings) 
     newest = rows[0]
     age = (wall_now - _aware(newest.last_tick_at)).total_seconds()
     heartbeats = [_heartbeat_body(row, wall_now) for row in rows]
-    # A host and a database container can disagree by a few milliseconds.
-    # That is still a fresh heartbeat. A large jump ahead is not.
-    if age < 0 and age >= -2:
-        age = 0.0
     if age < 0:
         status = UNKNOWN
         liveness = UNKNOWN

@@ -115,12 +115,14 @@ class Settings(BaseSettings):
     monitor_db_size_critical_mb: int = 40960
     monitor_disk_free_warn_mb: int = 5120
     monitor_disk_free_critical_mb: int = 2048
-    # Host percents are higher-is-worse. Critical is above 100 so a saturated
-    # 100% sample is WARN. A failed reading is UNKNOWN, not a fake zero.
+    # Host percents are higher-is-worse. A saturated sample can reach these
+    # bars. A failed reading is UNKNOWN, not a fake zero.
+    # SIMCORE_MONITOR_CPU_WARN_PERCENT / SIMCORE_MONITOR_CPU_CRITICAL_PERCENT
+    # SIMCORE_MONITOR_MEMORY_WARN_PERCENT / SIMCORE_MONITOR_MEMORY_CRITICAL_PERCENT
     monitor_cpu_warn_percent: float = 90
-    monitor_cpu_critical_percent: float = 101
-    monitor_memory_warn_percent: float = 90
-    monitor_memory_critical_percent: float = 101
+    monitor_cpu_critical_percent: float = 98
+    monitor_memory_warn_percent: float = 85
+    monitor_memory_critical_percent: float = 95
 
     @field_validator("database_url", mode="before")
     @classmethod

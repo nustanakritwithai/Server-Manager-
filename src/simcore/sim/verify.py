@@ -312,12 +312,23 @@ def _read_snapshot(api: ApiClient) -> dict[str, Any]:
         headers=api.admin_headers,
     )
     checksum_ok = isinstance(inspected, dict) and inspected.get("checksum_ok") is True
+    if inspect_status == 200 and checksum_ok and checksum:
+        detail = None
+    elif inspect_status != 200:
+        message = ""
+        if isinstance(inspected, dict):
+            error = inspected.get("error")
+            if isinstance(error, dict) and error.get("message"):
+                message = f": {error.get('message')}"
+        detail = f"inspect HTTP {inspect_status}{message}"
+    else:
+        detail = "snapshot inspect did not confirm the stored checksum"
     return {
-        "status": "PASS" if inspect_status == 200 and checksum_ok and checksum else "FAIL",
+        "status": "PASS" if detail is None else "FAIL",
         "checksum": checksum,
         "snapshot_id": snapshot_id,
         "checksum_ok": checksum_ok,
-        "detail": None if checksum_ok else "snapshot inspect did not confirm the stored checksum",
+        "detail": detail,
     }
 
 
