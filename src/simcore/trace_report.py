@@ -240,7 +240,7 @@ def _missing_links(
             fail.append(f"battle report {report.id} movement_id {report.movement_id} is not in this trace")
     for row in transactions:
         if row.source_event_id is None:
-            if row.reason in _ACCRUAL_REASONS:
+            if row.reason in _ACCRUAL_REASONS or row.reason == Reason.START:
                 continue
             fail.append(f"transaction {row.id} has no source event (orphan)")
         elif row.source_event_id not in event_ids:
@@ -799,6 +799,22 @@ def _spend_transfer_check(
         for name in RESOURCES:
             if got[name] != expected[name]:
                 fail.append(f"{name}: train spend {got[name]} != catalog cost {expected[name]}")
+    elif kind == "start":
+        expected = (command.target or {}).get("resources") or {}
+        if not isinstance(expected, dict):
+            fail.append("start command target resources are not an object")
+            return fail, incomplete
+        got = {name: 0 for name in RESOURCES}
+        for row in transactions:
+            if row.reason != Reason.START or row.resource not in got:
+                continue
+            if row.delta < 0:
+                fail.append(f"start transaction {row.id} has a negative delta")
+            got[row.resource] += int(row.delta)
+        for name in RESOURCES:
+            wanted = int(expected.get(name) or 0)
+            if got[name] != wanted:
+                fail.append(f"{name}: start grant {got[name]} != recorded amount {wanted}")
     elif kind == "found_city":
         got = {name: 0 for name in RESOURCES}
         for row in transactions:

@@ -12,14 +12,14 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from simcore.api.deps import get_session, require_admin
 from simcore.audit import record_admin_action
 from simcore.config import Settings
 from simcore.errors import GameError
-from simcore.models import Player, PlayerAccount, PlayerRefreshSession
+from simcore.models import City, Player, PlayerAccount, PlayerRefreshSession
 from simcore.player_auth import (
     account_for_player,
     hash_player_password,
@@ -38,13 +38,54 @@ class TemporaryPasswordIn(BaseModel):
     password: str = Field(min_length=1, max_length=1024)
 
 
+class AccountOut(BaseModel):
+    """One player row on the admin Accounts tab. Start fields are read-only."""
+
+    account_id: int | None
+    player_id: int | None
+    player_name: str | None
+    username: str | None
+    email: str | None
+    has_password: bool
+    locked: bool
+    must_change_password: bool
+    failed_login_count: int
+    login_locked_until: datetime | None
+    created_at: datetime | None
+    session_count: int
+    start_granted: bool
+    home_city_id: int | None = None
+
+
+class AccountListOut(BaseModel):
+    accounts: list[AccountOut]
+
+
 def _wall() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _account_body(player: Player, account: PlayerAccount | None, session_count: int) -> dict[str, object]:
+def _home_ids(session: Session) -> dict[int, int]:
+    rows = session.execute(select(City.player_id, func.min(City.id)).group_by(City.player_id)).all()
+    return {int(player_id): int(city_id) for player_id, city_id in rows}
+
+
+def _with_start(body: dict[str, object], homes: dict[int, int]) -> dict[str, object]:
+    player_id = body.get("player_id")
+    home_id = None if not isinstance(player_id, int) else homes.get(player_id)
+    body["start_granted"] = home_id is not None
+    body["home_city_id"] = home_id
+    return body
+
+
+def _account_body(
+    player: Player,
+    account: PlayerAccount | None,
+    session_count: int,
+    homes: dict[int, int],
+) -> dict[str, object]:
     if account is None:
-        return {
+        body = {
             "account_id": None,
             "player_id": player.id,
             "player_name": player.name,
@@ -58,20 +99,22 @@ def _account_body(player: Player, account: PlayerAccount | None, session_count: 
             "created_at": None,
             "session_count": session_count,
         }
-    return {
-        "account_id": account.id,
-        "player_id": player.id,
-        "player_name": player.name,
-        "username": account.username,
-        "email": account.email,
-        "has_password": True,
-        "locked": bool(account.locked),
-        "must_change_password": bool(account.must_change_password),
-        "failed_login_count": int(account.failed_login_count),
-        "login_locked_until": account.login_locked_until,
-        "created_at": account.created_at,
-        "session_count": session_count,
-    }
+    else:
+        body = {
+            "account_id": account.id,
+            "player_id": player.id,
+            "player_name": player.name,
+            "username": account.username,
+            "email": account.email,
+            "has_password": True,
+            "locked": bool(account.locked),
+            "must_change_password": bool(account.must_change_password),
+            "failed_login_count": int(account.failed_login_count),
+            "login_locked_until": account.login_locked_until,
+            "created_at": account.created_at,
+            "session_count": session_count,
+        }
+    return _with_start(body, homes)
 
 
 def _session_count(session: Session, account_id: int | None) -> int:
@@ -93,7 +136,7 @@ def _require_account(session: Session, account_id: int) -> PlayerAccount:
     return account
 
 
-@router.get("")
+@router.get("", response_model=AccountListOut)
 def list_accounts(
     session: Annotated[Session, Depends(get_session, scope="function")],
     _: Annotated[Settings, Depends(require_admin)],
@@ -103,12 +146,13 @@ def list_accounts(
     needle = q.strip().casefold()
     players = session.scalars(select(Player).order_by(Player.id)).all()
     accounts = session.scalars(select(PlayerAccount).order_by(PlayerAccount.id)).all()
+    homes = _home_ids(session)
     by_player = {account.player_id: account for account in accounts if account.player_id is not None}
     rows: list[dict[str, object]] = []
     seen: set[int] = set()
     for player in players:
         account = by_player.get(player.id)
-        body = _account_body(player, account, _session_count(session, None if account is None else account.id))
+        body = _account_body(player, account, _session_count(session, None if account is None else account.id), homes)
         if needle and not _matches(body, needle):
             continue
         rows.append(body)
@@ -121,22 +165,25 @@ def list_accounts(
             continue
         player = session.get(Player, account.player_id) if account.player_id is not None else None
         if player is None:
-            body = {
-                "account_id": account.id,
-                "player_id": account.player_id,
-                "player_name": None,
-                "username": account.username,
-                "email": account.email,
-                "has_password": True,
-                "locked": bool(account.locked),
-                "must_change_password": bool(account.must_change_password),
-                "failed_login_count": int(account.failed_login_count),
-                "login_locked_until": account.login_locked_until,
-                "created_at": account.created_at,
-                "session_count": _session_count(session, account.id),
-            }
+            body = _with_start(
+                {
+                    "account_id": account.id,
+                    "player_id": account.player_id,
+                    "player_name": None,
+                    "username": account.username,
+                    "email": account.email,
+                    "has_password": True,
+                    "locked": bool(account.locked),
+                    "must_change_password": bool(account.must_change_password),
+                    "failed_login_count": int(account.failed_login_count),
+                    "login_locked_until": account.login_locked_until,
+                    "created_at": account.created_at,
+                    "session_count": _session_count(session, account.id),
+                },
+                homes,
+            )
         else:
-            body = _account_body(player, account, _session_count(session, account.id))
+            body = _account_body(player, account, _session_count(session, account.id), homes)
         if needle and not _matches(body, needle):
             continue
         rows.append(body)

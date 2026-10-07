@@ -48,6 +48,8 @@ class Reason:
     FOUND_CITY = "found_city"
     TRANSFER_OUT = "transfer_out"
     TRANSFER_IN = "transfer_in"
+    # Opening stock for a new player. Positive. Written only by the start grant.
+    START = "start"
 
 
 class SnapshotReason:

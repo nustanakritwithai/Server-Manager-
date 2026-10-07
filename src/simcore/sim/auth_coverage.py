@@ -1,9 +1,9 @@
 """Auth cases the CI scenario must actually hit.
 
-These run after the bots have played. Cases that only touch accounts, audit
-rows, or rejected commands do not move armies. Registering the coverage user
-adds one player row with no city; both seeds do that at the same game clock.
-A case that is not exercised is INCOMPLETE, and the run does not pass.
+These run after the bots have played, and after the world checksum is read.
+Registering the coverage user grants that user a start as well. That city is
+not part of the checksum the two seeds compare. A case that is not exercised
+is INCOMPLETE, and the run does not pass.
 """
 
 from __future__ import annotations
@@ -40,6 +40,7 @@ _CASES = (
     "dev_login_disabled_in_production",
     "dev_token_rejected_in_production",
     "logout_all",
+    "claim_start",
 )
 
 
@@ -52,10 +53,17 @@ def run_auth_coverage(api: ApiClient, bots: list[dict[str, Any]], *, seed: int) 
         registered = register_bot(api, name="covuser", password=password)
         rows["register"] = _pass("register", f"player {registered.get('player_id')}")
         me_status, me = api.json("GET", "/v1/auth/me", headers=auth_headers(str(registered["access_token"])))
-        if me_status == 200 and isinstance(me, dict) and me.get("username") == "covuser":
-            rows["login_me"] = _pass("login_me", "GET /v1/auth/me")
+        if (
+            me_status == 200
+            and isinstance(me, dict)
+            and me.get("username") == "covuser"
+            and me.get("start_granted") is True
+            and isinstance(me.get("home_city"), dict)
+        ):
+            rows["login_me"] = _pass("login_me", "GET /v1/auth/me reports the starting city")
         else:
-            rows["login_me"] = _fail("login_me", f"HTTP {me_status}")
+            rows["login_me"] = _fail("login_me", f"HTTP {me_status} start_granted={None if not isinstance(me, dict) else me.get('start_granted')}")
+        _claim_start(api, rows, str(registered["access_token"]), me if isinstance(me, dict) else {})
         refreshed = refresh_bot(api, str(registered["refresh_token"]))
         rows["refresh"] = _pass("refresh", "rotated refresh token")
         access = str(refreshed["access_token"])
@@ -85,6 +93,36 @@ def run_auth_coverage(api: ApiClient, bots: list[dict[str, Any]], *, seed: int) 
         "matrix": matrix,
         "gaps": gaps,
     }
+
+
+def _claim_start(api: ApiClient, rows: dict[str, dict[str, Any]], access: str, me: dict[str, Any]) -> None:
+    """A second claim must return the same home and must not add a city."""
+
+    home = me.get("home_city") if isinstance(me.get("home_city"), dict) else {}
+    home_id = home.get("id")
+    status, body = api.json("POST", "/v1/auth/claim-start", headers=auth_headers(access))
+    again, again_body = api.json("POST", "/v1/auth/claim-start", headers=auth_headers(access))
+    cities_status, cities = api.json("GET", "/v1/me/cities", headers=auth_headers(access))
+    count = len(cities.get("cities") or []) if isinstance(cities, dict) else -1
+    first_home = body.get("home_city") if isinstance(body, dict) else None
+    second_home = again_body.get("home_city") if isinstance(again_body, dict) else None
+    same = (
+        isinstance(first_home, dict)
+        and isinstance(second_home, dict)
+        and first_home.get("id") == home_id
+        and second_home.get("id") == home_id
+        and isinstance(body, dict)
+        and isinstance(again_body, dict)
+        and body.get("created") is False
+        and again_body.get("created") is False
+    )
+    if status == 200 and again == 200 and same and cities_status == 200 and count == 1:
+        rows["claim_start"] = _pass("claim_start", "claim-start is idempotent and the register start is the only city")
+    else:
+        rows["claim_start"] = _fail(
+            "claim_start",
+            f"HTTP {status}/{again} created={None if not isinstance(body, dict) else body.get('created')} cities={count}",
+        )
 
 
 def _wrong_password(api: ApiClient, rows: dict[str, dict[str, Any]], password: str) -> None:

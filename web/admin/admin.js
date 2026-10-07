@@ -1470,6 +1470,8 @@
         { label: "Username", cell: (row) => blank(row.username) },
         { label: "Email", cell: (row) => blank(row.email) },
         { label: "Password", cell: (row) => (row.has_password ? "set" : "none") },
+        { label: "Start", cell: (row) => (row.start_granted ? "yes" : "no") },
+        { label: "Home", cell: (row) => blank(row.home_city_id) },
         { label: "Locked", cell: (row) => (row.locked ? badge("locked") : "no") },
         { label: "Must change", cell: (row) => (row.must_change_password ? "yes" : "no") },
         { label: "Sessions", cell: (row) => row.session_count },

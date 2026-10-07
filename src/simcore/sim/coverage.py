@@ -273,6 +273,7 @@ class _Script:
 
     def play(self) -> None:
         bot1, bot2, bot3, bot4 = self.actors
+        self._camps_from_start()
         cities = self._cities(bot1)
         home = {bot["name"]: cities[f"{bot['name']} Home"] for bot in self.actors}
         camp = {bot["name"]: cities[f"{bot['name']} Camp"] for bot in self.actors}
@@ -336,7 +337,7 @@ class _Script:
                 "source_city_id": int(home[bot1["name"]]["id"]),
                 "destination_city_id": int(camp[bot1["name"]]["id"]),
                 "wood": 100,
-                "food": 0,
+                "food": 50,
                 "iron": 0,
                 "gold": 0,
             },
@@ -350,7 +351,7 @@ class _Script:
                 "source_city_id": int(home[bot1["name"]]["id"]),
                 "destination_city_id": int(camp[bot1["name"]]["id"]),
                 "wood": 100,
-                "food": 0,
+                "food": 50,
                 "iron": 0,
                 "gold": 0,
             },
@@ -457,6 +458,68 @@ class _Script:
         self.combat["win"] = True
         self._catch_pending()
         self._read_reports(bot2, bot4)
+
+    def _camps_from_start(self) -> None:
+        """Found each bot's camp from the city registration already granted.
+
+        The start is one home and one militia. Two cavalry join the first bot
+        before anyone marches, so a later militia attack on that army is a
+        defender win. Bot 2 sends wood and food to the empty camp; the script's
+        clock advance delivers them before the empty-city win.
+        """
+
+        from simcore.game.catalog import MAP_MAX
+
+        for bot in self.actors:
+            cities = self._cities(bot)
+            home = cities[f"{bot['name']} Home"]
+            camp_name = f"{bot['name']} Camp"
+            if camp_name in cities:
+                continue
+            x = int(home["x"])
+            y = int(home["y"]) + 2
+            if y > MAP_MAX:
+                y = int(home["y"]) - 2
+            self._accept(
+                bot,
+                "found_city",
+                "/v1/commands/found-city",
+                {
+                    "source_city_id": int(home["id"]),
+                    "x": x,
+                    "y": y,
+                    "name": camp_name,
+                },
+            )
+        bot1 = self.actors[0]
+        home = self._cities(bot1)[f"{bot1['name']} Home"]
+        trained = self._accept(
+            bot1,
+            "train_units",
+            "/v1/commands/train",
+            {
+                "city_id": int(home["id"]),
+                "unit_type": "cavalry",
+                "count": 2,
+                "army_id": self._army(bot1),
+            },
+        )
+        self._wait(_parse_time(trained["due_at"]))
+        bot2 = self.actors[1]
+        cities = self._cities(bot2)
+        self._accept(
+            bot2,
+            "transfer_resources",
+            "/v1/commands/transfer",
+            {
+                "source_city_id": int(cities[f"{bot2['name']} Home"]["id"]),
+                "destination_city_id": int(cities[f"{bot2['name']} Camp"]["id"]),
+                "wood": 100,
+                "food": 100,
+                "iron": 0,
+                "gold": 0,
+            },
+        )
 
     def _reads(self, bot: dict[str, Any], city_id: int) -> None:
         headers = _bearer(bot)

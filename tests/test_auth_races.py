@@ -16,7 +16,7 @@ import uvicorn
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from simcore.clock import FrozenClock, OffsetClock
+from simcore.clock import FrozenClock
 from simcore.constants import EventType
 from simcore.db import get_sessionmaker
 from simcore.models import AuditLog, Event, PlayerRefreshSession
@@ -73,7 +73,6 @@ def test_concurrent_idempotency_key_applies_once(db, monkeypatch) -> None:
     """
 
     from simcore.api import routes as route_module
-    from simcore.sim.seed_world import seed_holdings
 
     frozen = FrozenClock(_EPOCH)
     original = route_module.queue_build
@@ -102,13 +101,6 @@ def test_concurrent_idempotency_key_applies_once(db, monkeypatch) -> None:
             )
             assert registered.status_code == 200, registered.text
             token = registered.json()["access_token"]
-            holder = get_sessionmaker()()
-            try:
-                now = OffsetClock(holder, frozen).now()
-                seed_holdings(holder, now, ["Ada"])
-                holder.commit()
-            finally:
-                holder.close()
             headers = {"Authorization": f"Bearer {token}"}
             cities = client.get("/v1/me/cities", headers=headers)
             assert cities.status_code == 200, cities.text
