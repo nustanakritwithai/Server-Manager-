@@ -119,6 +119,48 @@ $emptyDb = Convert-SimcoreCommandText (Get-NoPsqlRows)
 Assert-True "empty psql database is absent" ([string]::IsNullOrWhiteSpace($emptyDb) -or $emptyDb -notmatch "1")
 Assert-Equal "psql role row" (Convert-SimcoreCommandText " 1 `r") "1"
 Assert-True "psql database row" ((Convert-SimcoreCommandText "1") -match "1")
+Assert-Equal "sql literal plain" (Convert-SimcoreSqlLiteral "abc") "'abc'"
+Assert-Equal "sql literal quote" (Convert-SimcoreSqlLiteral "a'b") "'a''b'"
+Assert-Equal "sql literal empty" (Convert-SimcoreSqlLiteral "") "''"
+Assert-Equal "sql literal null" (Convert-SimcoreSqlLiteral $null) "''"
+$roleSql = Get-SimcoreEnsureRoleSql -Password "p@ss'word"
+Assert-True "role sql checks catalog" ($roleSql.Contains("IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'simcore')"))
+Assert-True "role sql alters existing role" ($roleSql.Contains("ALTER ROLE simcore WITH LOGIN PASSWORD"))
+Assert-True "role sql creates missing role" ($roleSql.Contains("CREATE ROLE simcore LOGIN PASSWORD"))
+Assert-True "role sql uses quote_literal format" ($roleSql.Contains("%L"))
+Assert-True "role sql escapes the password" ($roleSql.Contains("'p@ss''word'"))
+Assert-True "role sql does not use psql variables" ((-not $roleSql.Contains(":'")) -and (-not $roleSql.Contains("-v ")))
+$repeatSql = Get-SimcoreEnsureRoleSql -Password "p@ss'word"
+Assert-True "repeated role sql still alters" ($repeatSql.Contains("ALTER ROLE simcore WITH LOGIN PASSWORD"))
+Assert-True "repeated role sql still creates" ($repeatSql.Contains("CREATE ROLE simcore LOGIN PASSWORD"))
+Assert-Equal "alter postgres password" (Get-SimcoreAlterRolePasswordSql -Role "postgres" -Password "a'b") "ALTER ROLE postgres WITH LOGIN PASSWORD 'a''b';"
+Assert-Equal "create database sql" (Get-SimcoreCreateDatabaseSql) "CREATE DATABASE simcore OWNER simcore;"
+Assert-Equal "schema owner sql" (Get-SimcorePublicSchemaOwnerSql) "ALTER SCHEMA public OWNER TO simcore;"
+Assert-True "catalog row present" (Test-SimcoreCatalogRowPresent "1")
+Assert-True "blank catalog row is absent" (-not (Test-SimcoreCatalogRowPresent " "))
+Assert-True "empty catalog command is absent" (-not (Test-SimcoreCatalogRowPresent (Get-NoPsqlRows)))
+$psqlFail = Format-SimcorePsqlFailure -ExitCode 1 -Database "postgres" -Output "ERROR:  role `"simcore`" already exists"
+Assert-True "psql failure includes the server message" ($psqlFail.Contains("already exists") -and $psqlFail.Contains("exit 1") -and $psqlFail.Contains("database postgres"))
+Assert-Throws "unknown role password" { Get-SimcoreAlterRolePasswordSql -Role "other" -Password "x" } "Refusing"
+$fakeDir = Join-Path ([System.IO.Path]::GetTempPath()) ("simcore-fake-psql-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $fakeDir | Out-Null
+if ($env:OS -eq "Windows_NT") {
+    $fakeFail = Join-Path $fakeDir "psql.cmd"
+    [System.IO.File]::WriteAllText($fakeFail, "@echo off`r`necho ERROR: role simcore already exists 1>&2`r`nexit /b 1`r`n")
+    $fakeOk = Join-Path $fakeDir "psql-ok.cmd"
+    [System.IO.File]::WriteAllText($fakeOk, "@echo off`r`necho 1`r`nexit /b 0`r`n")
+} else {
+    $fakeFail = Join-Path $fakeDir "psql-fail"
+    [System.IO.File]::WriteAllText($fakeFail, "#!/bin/sh`necho ERROR: role simcore already exists >&2`nexit 1`n")
+    $fakeOk = Join-Path $fakeDir "psql-ok"
+    [System.IO.File]::WriteAllText($fakeOk, "#!/bin/sh`necho 1`nexit 0`n")
+    & chmod +x $fakeFail $fakeOk
+}
+Assert-Throws "psql stderr is in the exception" {
+    Invoke-Psql -Psql $fakeFail -Database "postgres" -Command "SELECT 1"
+} "already exists"
+Assert-True "psql row marks the database present" (Test-SimcoreCatalogRowPresent (Invoke-Psql -Psql $fakeOk -Command "SELECT 1 FROM pg_database WHERE datname = 'simcore'"))
+Remove-Item -LiteralPath $fakeDir -Recurse -Force
 Assert-True "null firewall filter is not port 5432" (-not (Test-SimcoreFirewallMatchesPort -Filter $null -Port 5432))
 Assert-True "null firewall port is not 5432" (-not (Test-SimcoreFirewallMatchesPort -Filter ([pscustomobject]@{ LocalPort = $null }) -Port 5432))
 Assert-True "firewall port 5432 matches" (Test-SimcoreFirewallMatchesPort -Filter ([pscustomobject]@{ LocalPort = 5432 }) -Port 5432)
