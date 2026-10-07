@@ -73,7 +73,7 @@ def create_app(settings: Settings | None = None, base_clock: Clock | None = None
         allow_origins=settings.cors_origin_list,
         allow_credentials=False,
         allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "Accept"],
+        allow_headers=["Authorization", "Content-Type", "Accept", "X-Admin-Token"],
     )
 
     @app.exception_handler(GameError)

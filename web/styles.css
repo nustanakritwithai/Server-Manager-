@@ -66,6 +66,8 @@ h2 { font-size: 1.15rem; }
 
 .who { display: flex; align-items: center; gap: 10px; color: var(--muted); }
 
+a.admin-link { color: var(--muted); font-size: 0.85rem; }
+
 .banner {
   width: min(1120px, calc(100% - 32px));
   margin: 8px auto 0;

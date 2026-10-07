@@ -35,6 +35,22 @@ def test_cors_does_not_reflect_an_unknown_origin(client) -> None:
     assert response.headers.get("access-control-allow-origin") in (None, "")
 
 
+def test_cors_preflight_allows_the_admin_token_header(client) -> None:
+    response = client.options(
+        "/v1/admin/dashboard",
+        headers={
+            "Origin": PAGES,
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "x-admin-token,content-type",
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.headers["access-control-allow-origin"] == PAGES
+    allowed = response.headers["access-control-allow-headers"].lower()
+    assert "x-admin-token" in allowed
+    assert "GET" in response.headers["access-control-allow-methods"]
+
+
 def test_clock_advance_stays_admin_only(client) -> None:
     denied = client.post("/v1/admin/clock/advance", json={"seconds": 1})
     assert denied.status_code == 401
